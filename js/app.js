@@ -5,7 +5,7 @@ import {
 import { library } from './library.js';
 import { pendingBrowserProjects, migrateProject } from './migrate.js';
 import { Camera } from './camera.js';
-import { FrameStore } from './framestore.js';
+import { FrameStore, isRawFile } from './framestore.js';
 import { History } from './history.js';
 import { AudioTrack } from './audio.js';
 import { createViewer } from './viewer-gl.js';
@@ -47,6 +47,8 @@ function defaultSettings() {
     quality: 0.95,
     delay: 0,
     shutterSound: true,
+    tether: { folder: '', assist: true },
+    display: 'preview',
     shortPlay: 6,
     loop: false,
     pingpong: false,
@@ -226,6 +228,8 @@ async function openProject(p, report = null) {
   updateProjectInfo();
   store.collectGarbage(p.id, p.frames.map((f) => f.id)).catch(() => {});
   showRecoveryReport(report);
+  applyDisplayKind();
+  restoreTether();
 }
 
 function updateTakeLabel() {
@@ -343,7 +347,9 @@ function compose(now) {
     } else {
       v.clear();
       v.draw(video, camera.width, camera.height, flip);
-      if (s.onion.enabled && fr.length) drawOnion(fr.length);
+      if (state.compareTest && state.testShot) {
+        v.draw(state.testShot, state.testShot.width, state.testShot.height, { clip: [0.5, 1] });
+      } else if (s.onion.enabled && fr.length) drawOnion(fr.length);
     }
   } else {
     const i = state.playhead;
@@ -702,6 +708,10 @@ let saveChain = Promise.resolve();
 
 async function capture(mode = 'append', { skipDelay = false } = {}) {
   if (state.busy) return;
+  if (!camera.active && state.tether) {
+    toast('Dispara con tu cámara o desde su programa: la foto entrará sola en MESORA.', 'info', 4000);
+    return;
+  }
   if (!camera.active) { toast('Conecta una cámara para capturar', 'warn'); return; }
   if (player.playing) stopPlayback(false);
   const project = P();
@@ -759,6 +769,115 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
   return job;
 }
 
+// ---------------------------------------------------------------- photo camera (tethering folder)
+
+const cameraApi = window.mesoraDesktop?.camera;
+
+/** Shows camera photos or the matching video-assist frames (desktop only). */
+function applyDisplayKind() {
+  store.displayKind = library.kind === 'disk' && S().display === 'assist' ? 'assist' : 'preview';
+  state.dirty = true;
+}
+
+function updateTetherUI() {
+  if (!cameraApi) return;
+  const folder = state.tether;
+  $('#tetherInfo').textContent = folder ? `Esperando fotos en: ${folder}` : 'No se está vigilando ninguna carpeta.';
+  $('#btnTether').textContent = folder ? 'Cambiar carpeta…' : 'Elegir carpeta…';
+  $('#btnTetherStop').hidden = !folder;
+  updateCamUI();
+}
+
+async function watchFolder(folder) {
+  try {
+    await cameraApi.watch(P().id, folder);
+    state.tether = folder;
+  } catch (err) {
+    state.tether = null;
+    toast(`No se puede vigilar la carpeta: ${err.message}`, 'error', 6000);
+  }
+  updateTetherUI();
+}
+
+async function chooseTetherFolder() {
+  const folder = await cameraApi.chooseFolder();
+  if (!folder) return;
+  S().tether.folder = folder;
+  saveSoon();
+  await watchFolder(folder);
+  if (state.tether) toast('Listo: haz fotos con tu cámara y aparecerán aquí.', 'ok', 5000);
+}
+
+async function stopTether() {
+  await cameraApi.unwatch().catch(() => {});
+  S().tether.folder = '';
+  state.tether = null;
+  saveSoon();
+  updateTetherUI();
+}
+
+/** On opening a take, keeps watching the folder its scene uses (or stops). */
+async function restoreTether() {
+  if (!cameraApi) return;
+  const folder = S().tether.folder;
+  if (folder && folder === state.tether) await cameraApi.retarget(P().id);
+  else if (folder) await watchFolder(folder);
+  else if (state.tether) { await cameraApi.unwatch().catch(() => {}); state.tether = null; }
+  updateTetherUI();
+}
+
+/** A new photo arrived from the camera's tethering folder and is already stored on disk. */
+function onCameraPhoto({ key, id, display }) {
+  const project = P();
+  if (!project || project.id !== key) return;
+  state.pendingCaptures++;
+  updateSaveState();
+  const job = saveChain.then(async () => {
+    const r = await store.addIngested(key, id, display ? new Blob([display], { type: 'image/jpeg' }) : null);
+    if (P() !== project) return;
+    if (!frames().length) setProjectSize(r.w, r.h);
+    if (S().tether.assist && camera.active) {
+      const c = await camera.grab({ flipH: S().flipH, flipV: S().flipV });
+      await library.writeAssist(key, id, await canvasToBlob(c, 'image/jpeg', 0.9));
+    }
+    commit((fr) => {
+      fr.push({ key: uid(), id, hold: 1 });
+      state.playhead = fr.length;
+      state.selection = new Set();
+    });
+    flash();
+  }).catch((err) => {
+    console.error(err);
+    toast(`No se pudo añadir la foto de la cámara: ${err.message}`, 'error', 6000);
+  }).finally(() => {
+    state.pendingCaptures--;
+    updateSaveState();
+  });
+  saveChain = job;
+}
+
+// ---------------------------------------------------------------- test shot (A/B)
+
+/** A photo to check exposure, focus or framing; it is not added to the animation. */
+async function takeTestShot() {
+  if (!camera.active) { toast('Conecta una cámara para hacer una foto de prueba', 'warn'); return; }
+  const c = await camera.grab({ average: S().average, flipH: S().flipH, flipV: S().flipV });
+  state.testShot?.close?.();
+  state.testShot = await createImageBitmap(c);
+  state.compareTest = true;
+  $('#btnCompareTest').classList.add('on');
+  $('#btnCompareTest').disabled = false;
+  state.dirty = true;
+  toast('Foto de prueba hecha. A la derecha ves la prueba y a la izquierda la cámara en vivo.', 'ok', 5000);
+}
+
+function toggleCompareTest() {
+  if (!state.testShot) return;
+  state.compareTest = !state.compareTest;
+  $('#btnCompareTest').classList.toggle('on', state.compareTest);
+  state.dirty = true;
+}
+
 // ---------------------------------------------------------------- camera
 
 function camPrefs() {
@@ -781,7 +900,7 @@ async function refreshDevices() {
   if (devices.some((d) => d.deviceId === current)) els.camDevice.value = current;
 }
 
-async function startCamera() {
+async function startCamera({ quiet = false } = {}) {
   if (!Camera.supported) {
     toast('Este navegador no permite usar la cámara (se necesita HTTPS o localhost)', 'error', 5000);
     return;
@@ -797,7 +916,7 @@ async function startCamera() {
       : err.name === 'NotReadableError' ? 'La cámara está en uso por otra aplicación'
       : `No se pudo abrir la cámara: ${err.message}`;
     els.stageEmptyMsg.textContent = msg;
-    toast(msg, 'error', 4500);
+    if (!quiet) toast(msg, 'error', 4500);
     updateCamUI();
     return;
   }
@@ -830,15 +949,30 @@ function stopCamera() {
 }
 
 camera.onEnded = () => {
-  toast('Se perdió la señal de la cámara', 'error');
   stopCamera();
+  reconnectCamera();
 };
+
+/** After the camera signal is lost (cable, sleep…), keeps trying to open it again for a minute. */
+async function reconnectCamera() {
+  if (state.reconnecting) return;
+  state.reconnecting = true;
+  toast('Se perdió la señal de la cámara. Intentando reconectar…', 'warn', 5000);
+  for (let i = 0; i < 30 && state.reconnecting && !camera.active; i++) {
+    await sleep(2000);
+    if (state.reconnecting) await startCamera({ quiet: true });
+  }
+  if (!state.reconnecting) return;
+  state.reconnecting = false;
+  if (camera.active) toast('Cámara reconectada', 'ok');
+  else toast('No se pudo reconectar la cámara. Revisa el cable y pulsa Conectar.', 'error', 7000);
+}
 
 function updateCamUI() {
   const on = camera.active;
   els.camToggle.textContent = on ? 'Desconectar' : 'Conectar';
   els.camInfo.textContent = on ? camera.info() : 'Sin señal';
-  els.capture.disabled = !on;
+  els.capture.disabled = !on && !state.tether;
   updateStageEmpty();
 }
 
@@ -1085,6 +1219,7 @@ function onSettingChanged(path) {
   if (path === 'zoom') renderTimeline();
   if (path === 'timelapseInterval' && state.timelapseTimer) { stopTimelapse(); startTimelapse(); }
   if (path === 'grade.deflicker') { state.gains = new Map(); scheduleGains(); }
+  if (path === 'display') applyDisplayKind();
   updateHudFlags();
   updateTransport();
 }
@@ -1446,7 +1581,7 @@ function updateSpacing() {
 async function importFiles(fileList) {
   const files = [...fileList];
   const images = files
-    .filter((f) => f.type.startsWith('image/'))
+    .filter((f) => f.type.startsWith('image/') || isRawFile(f))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const audios = files.filter((f) => f.type.startsWith('audio/'));
   const projects = files.filter((f) => /\.(mesora|zip)$/i.test(f.name));
@@ -2209,7 +2344,10 @@ function bindUI() {
   document.addEventListener('keydown', unlock, { once: true });
 
   $('#btnStartCam').addEventListener('click', startCamera);
-  els.camToggle.addEventListener('click', () => (camera.active ? stopCamera() : startCamera()));
+  els.camToggle.addEventListener('click', () => {
+    state.reconnecting = false;
+    if (camera.active) stopCamera(); else startCamera();
+  });
   els.camDevice.addEventListener('change', () => { if (camera.active || els.camDevice.value) startCamera(); });
   els.camRes.addEventListener('change', () => { saveCamPrefs({ resolution: els.camRes.value }); if (camera.active) startCamera(); });
   $('#btnCamLock').addEventListener('click', async () => {
@@ -2229,6 +2367,14 @@ function bindUI() {
   });
 
   els.capture.addEventListener('click', () => capture());
+  $('#btnTestShot').addEventListener('click', () => takeTestShot().catch((err) => toast(err.message, 'error')));
+  $('#btnCompareTest').addEventListener('click', toggleCompareTest);
+  if (cameraApi) {
+    $('#btnTether').addEventListener('click', () => chooseTetherFolder().catch((err) => toast(err.message, 'error', 6000)));
+    $('#btnTetherStop').addEventListener('click', () => stopTether());
+    cameraApi.onPhoto(onCameraPhoto);
+    cameraApi.onError((msg) => toast(msg, 'error', 7000));
+  }
   els.play.addEventListener('click', togglePlay);
   $('#tFirst').addEventListener('click', () => setPlayhead(0));
   $('#tPrev').addEventListener('click', () => step(-1));

@@ -31,8 +31,11 @@ uniform float uAlpha;
 uniform int uMode;      // 0 normal, 1 difference, 2 lighten, 3 darken
 uniform vec3 uGrade;    // brightness, contrast, saturation (CSS filter semantics)
 uniform vec3 uTint;
+uniform vec2 uClip;
 void main() {
   vec4 dst = accAt(uAcc);
+  float band = gl_FragCoord.x / uSize.x;
+  if (band < uClip.x || band > uClip.y) { outColor = dst; return; }
   vec2 uv = rectUv(uRect, imagePx());
   if (!inside(uv)) { outColor = dst; return; }
   uv = mix(uv, 1.0 - uv, uFlip);
@@ -250,7 +253,7 @@ export class GLViewer extends Viewer {
     this.pending = true;
   }
 
-  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over', grade = null, tint = null } = {}) {
+  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over', grade = null, tint = null, clip = null } = {}) {
     if (this.lost || !sw || !sh) return;
     const { gl } = this;
     const f = fitContain(sw, sh, this.W, this.H);
@@ -265,6 +268,7 @@ export class GLViewer extends Viewer {
       gl.uniform1i(u.uMode, MODES[op] ?? 0);
       gl.uniform3f(u.uGrade, grade?.brightness ?? 1, grade?.contrast ?? 1, grade?.saturation ?? 1);
       gl.uniform3fv(u.uTint, tint || [1, 1, 1]);
+      gl.uniform2f(u.uClip, clip ? clip[0] : 0, clip ? clip[1] : 1);
     });
     this.pending = true;
   }

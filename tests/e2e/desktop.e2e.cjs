@@ -180,6 +180,56 @@ const listTakes = () => {
   check(/Video: h264.*1280x720/.test(probe) && nFrames === 4, `MP4 H.264 1280×720 con 4 imágenes (3 fotogramas, uno con hold 2): ${nFrames}`);
   check(seq && fs.readdirSync(path.join(libDir, 'Corto E2E', 'exports', seq)).length === 4, 'secuencia PNG con 4 imágenes en su propia carpeta');
 
+  // 7c) Cámara de fotos por su programa de tethering: la carpeta vigilada recibe RAW + JPEG y RAW solo.
+  const { spawnSync } = require('node:child_process');
+  const ffmpegBin = require('ffmpeg-static');
+  const makeJpeg = (w, h, color) => spawnSync(ffmpegBin, ['-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', `color=c=${color}:s=${w}x${h}`, '-frames:v', '1', '-f', 'image2pipe', '-c:v', 'mjpeg', '-'], { maxBuffer: 1 << 26 }).stdout;
+  const fakeRaw = (color) => Buffer.concat([Buffer.from('II*\0'), require('node:crypto').randomBytes(4000), makeJpeg(960, 540, color), require('node:crypto').randomBytes(2000)]);
+  const tether = path.join(work, 'EOS Utility');
+  fs.mkdirSync(tether);
+  await app.evaluate(({ dialog }, dir) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, tether);
+  await win.click('.tab[data-tab="camera"]');
+  await win.click('#btnTether');
+  await win.waitForSelector('#tetherInfo:has-text("Esperando fotos")');
+  const before = await win.evaluate(() => window.mesora.state.project.frames.length);
+  fs.writeFileSync(path.join(tether, 'IMG_0001.CR3'), fakeRaw('blue'));
+  fs.writeFileSync(path.join(tether, 'IMG_0001.JPG'), makeJpeg(960, 540, 'blue'));
+  await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 1, before, { timeout: 15000 });
+  fs.writeFileSync(path.join(tether, 'IMG_0002.NEF'), fakeRaw('yellow'));
+  await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 2, before, { timeout: 15000 });
+  await win.waitForFunction(() => window.mesora.state.pendingCaptures === 0);
+  take = listTakes().find((t) => t.prod === 'Corto E2E');
+  check(take.files.includes('sc010_tk01_X1_c000004.cr3') && take.files.includes('sc010_tk01_X1_c000004.jpg') && take.files.includes('sc010_tk01_X1_c000005.nef'),
+    `carpeta vigilada: RAW + JPEG como una sola foto y RAW solo (${take.files.slice(-3).join(', ')})`);
+  check(fs.readdirSync(tether).length === 3, 'las fotos de la carpeta de la cámara siguen ahí (se copian, no se mueven)');
+  const rawShown = await win.evaluate(async () => {
+    const fr = window.mesora.state.project.frames;
+    const bmp = await window.mesora.store.load(fr[fr.length - 1].id);
+    return bmp ? `${bmp.width}x${bmp.height}` : null;
+  });
+  check(rawShown === '960x540', `el RAW se ve con su JPEG incrustado (${rawShown})`);
+  check(fs.existsSync(path.join(take.dir, 'proxy', 'c000005.assist.jpg')), 'se guardó el video assist de la cámara en vivo junto a la foto');
+  await win.selectOption('[data-setting="display"]', 'assist');
+  check(await win.evaluate(() => window.mesora.store.displayKind) === 'assist', 'el visor puede mostrar el video assist en lugar de las fotos');
+  await win.selectOption('[data-setting="display"]', 'preview');
+  await win.click('#btnTetherStop');
+
+  // RAW importado arrastrándolo (aquí, con el selector de archivos).
+  const rawFile = path.join(work, 'DSC_0009.ARW');
+  fs.writeFileSync(rawFile, fakeRaw('green'));
+  await win.setInputFiles('#fileImport', rawFile);
+  await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 3, before, { timeout: 15000 });
+  check(listTakes().find((t) => t.prod === 'Corto E2E').files.includes('sc010_tk01_X1_c000006.arw'), 'importar un RAW lo guarda tal cual y lo muestra');
+
+  // Reconexión automática si se pierde la señal de la cámara.
+  await win.evaluate(() => window.mesora.camera.track.dispatchEvent(new Event('ended')));
+  await win.waitForSelector('.toast:has-text("Cámara reconectada")', { timeout: 20000 });
+  check(await win.evaluate(() => window.mesora.camera.active), 'la cámara se reconecta sola tras perder la señal');
+  // Deja la toma como estaba para las comprobaciones siguientes.
+  await win.evaluate(() => { const p = window.mesora.state.project; p.frames.splice(3); });
+  await win.keyboard.press('Control+s');
+  await win.waitForTimeout(800);
+
   // 8) Proyectos agrupados: un grupo por proyecto y una fila por toma.
   await win.click('#btnProjects');
   await win.waitForSelector('.prod-group');

@@ -98,6 +98,10 @@ const browserLibrary = {
   deleteBlob(_projectId, id) {
     return db.del('blobs', id);
   },
+
+  async addRawFile() {
+    throw new Error('Los archivos RAW solo se pueden importar en la app de escritorio');
+  },
 };
 
 /** Production folders on disk (desktop app). */
@@ -183,6 +187,21 @@ const diskLibrary = {
 
   /** Replaced media stay in the production's media folder: another scene may use them. */
   async deleteBlob() {},
+
+  /** Imports an image file the browser cannot display by itself (camera RAW). Returns { id, display }. */
+  async addRawFile(projectId, file) {
+    const r = await bridge.call('ingestCapture', projectId, { full: { bytes: await bytesOf(file), type: file.type, name: file.name } });
+    return { id: r.id, display: r.display ? new Blob([r.display.bytes], { type: 'image/jpeg' }) : null };
+  },
+
+  async writeProxies(projectId, id, { preview, thumb, w, h, luma }) {
+    const [p, t] = await Promise.all([preview, thumb].map((b) => b && bytesOf(b)));
+    await bridge.call('writeProxies', projectId, id, { preview: p && { bytes: p }, thumb: t && { bytes: t }, meta: { w, h, luma } });
+  },
+
+  async writeAssist(projectId, id, blob) {
+    await bridge.call('writeAssist', projectId, id, { bytes: await bytesOf(blob) });
+  },
 
   // Production features that only exist on disk.
   createScene: (prodId, opts) => bridge.call('createScene', prodId, opts),

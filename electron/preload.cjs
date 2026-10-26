@@ -18,6 +18,14 @@ contextBridge.exposeInMainWorld('mesoraDesktop', {
     wav: (key, spec) => ipcRenderer.invoke('export:wav', key, spec),
     reveal: (target) => ipcRenderer.invoke('export:reveal', target),
   },
+  camera: {
+    chooseFolder: () => ipcRenderer.invoke('camera:chooseFolder'),
+    watch: (key, dir) => ipcRenderer.invoke('camera:watch', key, dir),
+    retarget: (key) => ipcRenderer.invoke('camera:retarget', key),
+    unwatch: () => ipcRenderer.invoke('camera:unwatch'),
+    onPhoto: (cb) => ipcRenderer.on('camera:photo', (_e, data) => cb(data)),
+    onError: (cb) => ipcRenderer.on('camera:error', (_e, msg) => cb(msg)),
+  },
   library: {
     call: (method, ...args) => ipcRenderer.invoke('library', method, ...args),
     root: () => ipcRenderer.invoke('library:root'),

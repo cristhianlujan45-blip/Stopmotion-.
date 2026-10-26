@@ -9,6 +9,7 @@ const { Library } = require('./core/library.cjs');
 const { initLog, log, logFile } = require('./core/log.cjs');
 const { checkForUpdate } = require('./core/updates.cjs');
 const { serveExport } = require('./export-ipc.cjs');
+const { serveCamera } = require('./camera-ipc.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'www');
 const START_URL = 'app://mesora/index.html';
@@ -21,7 +22,7 @@ const libraryRoot = () => process.env.MESORA_LIBRARY || path.join(app.getPath('d
 const LIBRARY_METHODS = new Set([
   'listTakes', 'createProduction', 'createScene', 'createTake', 'duplicateScene', 'getProject', 'saveProject',
   'rename', 'ingestCapture', 'readCapture', 'readMeta', 'writeMeta', 'listTrash', 'putBlob', 'getBlob',
-  'conform', 'listHistory', 'restoreHistory', 'markMigrated',
+  'conform', 'listHistory', 'restoreHistory', 'markMigrated', 'writeProxies', 'writeAssist',
 ]);
 
 function fromApp(event) {
@@ -216,7 +217,8 @@ app.whenReady().then(async () => {
   serveLibrary();
   serveAppInfo();
   const exports = serveExport({ ipcMain, dialog, shell, library, getWindow: () => mainWindow, fromApp, log });
-  app.on('before-quit', () => { exports.cancelAll(); });
+  const camera = serveCamera({ ipcMain, dialog, library, getWindow: () => mainWindow, fromApp, log });
+  app.on('before-quit', () => { exports.cancelAll(); camera.stop(); });
   allowCamera();
   buildMenu();
   if (process.platform === 'darwin' && !process.env.MESORA_TEST) {

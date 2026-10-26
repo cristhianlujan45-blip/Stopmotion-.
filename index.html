@@ -140,6 +140,27 @@
             </select>
           </label>
           <label class="check"><input type="checkbox" data-setting="shutterSound"> Sonido de obturador</label>
+          <div class="row">
+            <button class="btn grow" id="btnTestShot" title="Una foto para revisar luz, foco o encuadre. No se añade a la animación.">Foto de prueba</button>
+            <button class="btn toggle grow" id="btnCompareTest" disabled title="Muestra la foto de prueba en la mitad derecha y la cámara en vivo en la izquierda">Comparar</button>
+          </div>
+        </details>
+
+        <details class="group desktop-app-only" data-sec="camara-de-fotos" open>
+          <summary>Cámara de fotos (réflex o sin espejo)</summary>
+          <p class="muted small">Conecta la cámara por USB con su programa oficial (EOS Utility, NX Tether, Imaging Edge, X Acquire…) y dile que guarde las fotos en una carpeta. Elige esa carpeta aquí: cada foto que hagas entrará sola como fotograma, también en RAW.</p>
+          <div class="row">
+            <button class="btn grow" id="btnTether">Elegir carpeta…</button>
+            <button class="btn ghost" id="btnTetherStop" hidden>Detener</button>
+          </div>
+          <p class="muted small" id="tetherInfo">No se está vigilando ninguna carpeta.</p>
+          <label class="check" title="Si además tienes conectada la salida HDMI de la cámara o una webcam, se guarda también lo que se veía en vivo al llegar cada foto"><input type="checkbox" data-setting="tether.assist"> Guardar también la imagen en vivo (video assist)</label>
+          <label class="field"><span>En el visor mostrar</span>
+            <select data-setting="display">
+              <option value="preview">Las fotos de la cámara (alta calidad)</option>
+              <option value="assist">El video assist (mismo encuadre que el vivo)</option>
+            </select>
+          </label>
         </details>
 
         <details class="group" data-sec="controles-de-camara">

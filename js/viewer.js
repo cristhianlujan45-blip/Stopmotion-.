@@ -88,12 +88,18 @@ export class Viewer {
   /**
    * Draws a layer. op: 'source-over' | 'difference' | 'lighten' | 'darken'.
    * grade: { brightness, contrast, saturation }. tint (RGB multipliers) is only shown by the GPU viewer.
+   * clip: [from, to] limits the layer to that horizontal band (0…1), e.g. [0.5, 1] for the right half.
    */
-  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over', grade = null } = {}) {
+  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over', grade = null, clip = null } = {}) {
     const { ctx, W, H } = this;
     const f = fitContain(sw, sh, W, H);
     const filter = grade ? gradeFilter(grade) : 'none';
     ctx.save();
+    if (clip) {
+      ctx.beginPath();
+      ctx.rect(clip[0] * W, 0, (clip[1] - clip[0]) * W, H);
+      ctx.clip();
+    }
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = op;
     if (filter !== 'none') ctx.filter = filter;

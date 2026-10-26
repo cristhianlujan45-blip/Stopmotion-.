@@ -79,6 +79,7 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mesora-viewer-'));
       'espejo horizontal': (v) => { v.clear(); v.draw(img.redBlue, W, H, { flipH: true }); return [[40, 90, [0, 0, 255]], [280, 90, [255, 0, 0]]]; },
       'croma sin fondo (cuadros)': (v) => { v.clear(); v.draw(img.key, W, H); v.chroma({ color: '#00ff00', threshold: 0.1, softness: 0.05 }, null); return [[160, 90, [255, 0, 0]], [8, 8, [42, 44, 49]], [24, 8, [58, 61, 68]]]; },
       'croma con fondo': (v) => { v.clear(); v.draw(img.key, W, H); v.chroma({ color: '#00ff00', threshold: 0.1, softness: 0.05 }, img.blue); return [[160, 90, [255, 0, 0]], [20, 20, [0, 0, 255]]]; },
+      'comparación A/B (mitad derecha)': (v) => { v.clear(); v.draw(img.red, W, H); v.draw(img.blue, W, H, { clip: [0.5, 1] }); return [[80, 90, [255, 0, 0]], [240, 90, [0, 0, 255]]]; },
       'peaking marca el borde': (v) => { v.clear(); v.draw(img.blackWhite, W, H); v.peaking(60); return [[160, 90, [255, 40, 40]], [40, 90, [0, 0, 0]], [280, 90, [255, 255, 255]]]; },
     };
     const gpuOnly = {
