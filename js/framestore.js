@@ -2,7 +2,10 @@ import { library } from './library.js';
 import { makeCanvas, canvasToBlob } from './util.js';
 import { meanLuma } from './grading.js';
 
-export const PREVIEW_MAX = 1280;
+/** Longest side of the playback proxies: 1080p in the desktop app, 720p in the browser and on phones. */
+export const previewMax = () => (window.mesoraDesktop ? 1920 : 1280);
+/** Memory for decoded frames: about 6 s of 1080p at 24 fps on desktop. */
+const CACHE_BYTES = () => (window.mesoraDesktop ? 1200 : 300) * 1024 * 1024;
 export const THUMB_H = 72;
 
 /**
@@ -10,13 +13,14 @@ export const THUMB_H = 72;
  * bounded LRU cache of decoded ImageBitmaps for fast drawing.
  */
 export class FrameStore {
-  constructor({ maxCache = 72, onLoad = () => {} } = {}) {
+  constructor({ maxBytes = CACHE_BYTES(), onLoad = () => {} } = {}) {
     this.projectId = null;
     this.cache = new Map();
+    this.bytes = 0;
     this.pending = new Map();
     this.thumbUrls = new Map();
     this.lumas = new Map();
-    this.maxCache = maxCache;
+    this.maxBytes = maxBytes;
     this.onLoad = onLoad;
   }
 
@@ -38,7 +42,7 @@ export class FrameStore {
   }
 
   async _add(projectId, source, w, h, full) {
-    const pw = Math.min(PREVIEW_MAX, w);
+    const pw = Math.min(previewMax(), w);
     const ph = Math.round((h * pw) / w);
     const pc = makeCanvas(pw, ph);
     const pctx = pc.getContext('2d');
@@ -150,13 +154,20 @@ export class FrameStore {
   }
 
   _set(key, bmp) {
+    const size = (b) => b.width * b.height * 4;
     const old = this.cache.get(key);
-    if (old && old !== bmp) old.close?.();
+    if (old) {
+      this.bytes -= size(old);
+      if (old !== bmp) old.close?.();
+    }
     this.cache.delete(key);
     this.cache.set(key, bmp);
-    while (this.cache.size > this.maxCache) {
+    this.bytes += size(bmp);
+    // Least recently used first; always keep at least a few frames.
+    while (this.bytes > this.maxBytes && this.cache.size > 8) {
       const [k, b] = this.cache.entries().next().value;
       this.cache.delete(k);
+      this.bytes -= size(b);
       b.close?.();
     }
   }
@@ -164,7 +175,8 @@ export class FrameStore {
   forget(id) {
     for (const kind of ['preview', 'full']) {
       const key = `${id}:${kind}`;
-      this.cache.get(key)?.close?.();
+      const b = this.cache.get(key);
+      if (b) { this.bytes -= b.width * b.height * 4; b.close?.(); }
       this.cache.delete(key);
     }
     const url = this.thumbUrls.get(id);
@@ -178,6 +190,7 @@ export class FrameStore {
     this.lumas.clear();
     for (const b of this.cache.values()) b.close?.();
     this.cache.clear();
+    this.bytes = 0;
     for (const url of this.thumbUrls.values()) URL.revokeObjectURL(url);
     this.thumbUrls.clear();
   }

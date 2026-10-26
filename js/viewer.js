@@ -1,5 +1,6 @@
 import { makeCanvas, fitContain, fitCover, clamp } from './util.js';
-import { PREVIEW_MAX } from './framestore.js';
+import { previewMax } from './framestore.js';
+import { gradeFilter } from './grading.js';
 
 const CHROMA_W = 640;
 const PEAK_W = 480;
@@ -13,7 +14,7 @@ export class Viewer {
     this.overlay = overlay;
     this.guides = guides;
     this.loupe = loupe;
-    this.ctx = main.getContext('2d');
+    this.initContext();
     this.aspect = 16 / 9;
     this.onResize = () => {};
 
@@ -30,13 +31,22 @@ export class Viewer {
     new ResizeObserver(() => this.resize()).observe(area);
   }
 
+  /** Canvas 2D compositor; the GPU viewer overrides this. */
+  initContext() {
+    this.ctx = this.main.getContext('2d');
+    this.kind = '2d';
+  }
+
+  /** Nothing to do: Canvas 2D draws straight onto the visible canvas. */
+  flush() {}
+
   get W() { return this.main.width; }
   get H() { return this.main.height; }
 
   setSize(w, h) {
     if (!w || !h) return;
     this.aspect = w / h;
-    const W = Math.min(PREVIEW_MAX, w);
+    const W = Math.min(previewMax(), w);
     const H = Math.round(W / this.aspect);
     if (this.main.width !== W || this.main.height !== H) {
       this.main.width = W;
@@ -75,9 +85,14 @@ export class Viewer {
     this.ctx.restore();
   }
 
-  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over', filter = 'none' } = {}) {
+  /**
+   * Draws a layer. op: 'source-over' | 'difference' | 'lighten' | 'darken'.
+   * grade: { brightness, contrast, saturation }. tint (RGB multipliers) is only shown by the GPU viewer.
+   */
+  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over', grade = null } = {}) {
     const { ctx, W, H } = this;
     const f = fitContain(sw, sh, W, H);
+    const filter = grade ? gradeFilter(grade) : 'none';
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = op;

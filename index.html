@@ -164,6 +164,20 @@
           <label class="field"><span>Opacidad <output data-out="onion.opacity"></output></span>
             <input type="range" min="0.05" max="1" step="0.01" data-setting="onion.opacity">
           </label>
+          <details class="more">
+            <summary>Más opciones</summary>
+            <label class="field"><span>Fotogramas siguientes (al revisar) <output data-out="onion.next"></output></span>
+              <input type="range" min="0" max="4" step="1" data-setting="onion.next">
+            </label>
+            <label class="check" id="onionColorsRow"><input type="checkbox" data-setting="onion.colors"> Colores: anteriores en rojo, siguientes en verde</label>
+            <label class="field"><span>Cómo se mezclan</span>
+              <select data-setting="onion.blend">
+                <option value="normal">Normal</option>
+                <option value="lighten">Destacar lo claro (objetos claros sobre fondo oscuro)</option>
+                <option value="darken">Destacar lo oscuro (objetos oscuros sobre fondo claro)</option>
+              </select>
+            </label>
+          </details>
         </details>
 
         <details class="group" data-sec="modo-de-visualizacion" open>
@@ -296,18 +310,6 @@
       <div class="tabpanel" data-panel="tools">
         <details class="group" data-sec="proyecto" open>
           <summary>Proyecto</summary>
-          <label class="field"><span>Velocidad (fotogramas por segundo)</span>
-            <select id="fpsSelect">
-              <option value="6">6 fps</option>
-              <option value="8">8 fps</option>
-              <option value="10">10 fps</option>
-              <option value="12">12 fps</option>
-              <option value="15">15 fps</option>
-              <option value="24">24 fps</option>
-              <option value="25">25 fps</option>
-              <option value="30">30 fps</option>
-            </select>
-          </label>
           <p class="muted small" id="projectInfo"></p>
           <div class="row wrap" id="diskTools" hidden>
             <button class="btn" id="btnTrash" title="Fotogramas borrados de esta toma. Sus originales siguen en el disco y se pueden restaurar.">Papelera</button>
@@ -375,6 +377,18 @@
         <button class="btn icon play" id="tPlay" title="Reproducir (0 / Espacio)" aria-label="Reproducir"><svg class="ic"><use href="#i-play"/></svg></button>
         <button class="btn icon" id="tNext" title="Fotograma siguiente (3 / →)" aria-label="Fotograma siguiente"><svg class="ic"><use href="#i-next"/></svg></button>
         <button class="btn live-btn" id="tLive" title="Ir a vista en vivo (5 / Fin)">EN VIVO</button>
+        <select id="fpsSelect" class="fps-select" title="Velocidad de la animación: fotogramas por segundo. 12 es lo habitual para empezar; 24 es cine." aria-label="Fotogramas por segundo">
+          <option value="6">6 fps</option>
+          <option value="8">8 fps</option>
+          <option value="10">10 fps</option>
+          <option value="12">12 fps</option>
+          <option value="15">15 fps</option>
+          <option value="18">18 fps</option>
+          <option value="24">24 fps</option>
+          <option value="25">25 fps</option>
+          <option value="30">30 fps</option>
+          <option value="custom">Otro…</option>
+        </select>
       </div>
       <div class="tgroup">
         <button class="btn icon toggle" id="tLoop" title="Bucle (8 / L)" aria-label="Bucle"><svg class="ic"><use href="#i-loop"/></svg></button>
@@ -423,6 +437,7 @@
             <option value="12">12 fps</option>
             <option value="15">15 fps</option>
             <option value="24">24 fps</option>
+            <option value="18">18 fps</option>
             <option value="25">25 fps</option>
             <option value="30">30 fps</option>
             <option value="8">8 fps</option>

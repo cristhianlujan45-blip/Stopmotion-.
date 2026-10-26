@@ -50,7 +50,9 @@ jobs:
       - name: Desktop end-to-end test
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a npm run test:e2e; else npm run test:e2e; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then RUN="xvfb-run -a"; else RUN=""; fi
+          $RUN npm run test:viewer
+          $RUN npm run test:e2e
 
   windows:
     needs: test

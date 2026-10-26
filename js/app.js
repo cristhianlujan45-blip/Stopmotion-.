@@ -8,7 +8,7 @@ import { Camera } from './camera.js';
 import { FrameStore } from './framestore.js';
 import { History } from './history.js';
 import { AudioTrack } from './audio.js';
-import { Viewer } from './viewer.js';
+import { createViewer } from './viewer-gl.js';
 import { Timeline } from './timeline.js';
 import {
   totalExposures, expandExposures, exposureStart, formatTime, moveItems, computeSpacing,
@@ -27,7 +27,7 @@ const GRID_CYCLE = ['none', 'thirds', 'quarters', 'fine', 'center'];
 
 function defaultSettings() {
   return {
-    onion: { enabled: true, count: 1, opacity: 0.4 },
+    onion: { enabled: true, count: 1, opacity: 0.4, next: 0, colors: false, blend: 'normal' },
     mode: 'normal',
     blinkRate: 4,
     chroma: { color: '#00b140', threshold: 0.12, softness: 0.06, bgBlobId: null },
@@ -147,7 +147,7 @@ const camera = new Camera($('#video'));
 const store = new FrameStore({ onLoad: () => { state.dirty = true; } });
 const history = new History();
 const audio = new AudioTrack();
-const viewer = new Viewer({
+const viewer = createViewer({
   area: els.area, stage: els.stage, main: $('#mainCanvas'), overlay: $('#overlayCanvas'),
   guides: els.guides, loupe: els.loupe,
 });
@@ -266,6 +266,7 @@ function loop(now) {
   if (!state.dirty && !liveCam && !state.blink) return;
   state.dirty = false;
   compose(now);
+  viewer.flush();
   const s = S();
   if (s.histogram && now - state.lastHist > 200) {
     state.lastHist = now;
@@ -274,22 +275,38 @@ function loop(now) {
   if (state.loupe && state.loupePos) updateLoupe();
 }
 
-/** Colour grade + deflicker filter for the frame at `index`. */
-function frameFilter(index) {
+/** Colour grade + deflicker gain for the frame at `index`, or null when nothing changes. */
+function frameGrade(index) {
   const g = S().grade;
   const f = frames()[index];
   const gain = g.deflicker && f ? state.gains.get(f.key) ?? 1 : 1;
-  return gradeFilter(g, gain);
+  const grade = { brightness: g.brightness * gain, contrast: g.contrast, saturation: g.saturation };
+  return gradeFilter(grade) === 'none' ? null : grade;
 }
 
-function drawOnion(fromIndex) {
+/** Canvas filter string of the same grade, used when exporting. */
+function frameFilter(index) {
+  return gradeFilter(frameGrade(index) || {});
+}
+
+const ONION_PREV_TINT = [1, 0.5, 0.5];
+const ONION_NEXT_TINT = [0.5, 1, 0.6];
+
+/**
+ * Onion skin around `current` (the frame shown, or frames().length when live):
+ * earlier frames, and later ones when reviewing. Nearer frames are more opaque.
+ */
+function drawOnion(current) {
   const s = S().onion;
   const fr = frames();
-  for (let k = s.count - 1; k >= 0; k--) {
-    const idx = fromIndex - k;
-    if (idx < 0) continue;
+  const op = s.blend === 'lighten' || s.blend === 'darken' ? s.blend : 'source-over';
+  const layer = (idx, k, n, tint) => {
     const bmp = store.peek(fr[idx].id);
-    if (bmp) viewer.draw(bmp, bmp.width, bmp.height, { alpha: (s.opacity * (s.count - k)) / s.count });
+    if (bmp) viewer.draw(bmp, bmp.width, bmp.height, { alpha: (s.opacity * (n - k)) / n, op, tint: s.colors ? tint : null });
+  };
+  for (let k = s.count - 1; k >= 0; k--) if (current - 1 - k >= 0) layer(current - 1 - k, k, s.count, ONION_PREV_TINT);
+  if (current < fr.length) {
+    for (let k = s.next - 1; k >= 0; k--) if (current + 1 + k < fr.length) layer(current + 1 + k, k, s.next, ONION_NEXT_TINT);
   }
 }
 
@@ -306,7 +323,7 @@ function compose(now) {
     const bmp = f && store.peek(f.id);
     if (!bmp) return;
     v.clear();
-    v.draw(bmp, bmp.width, bmp.height, { filter: frameFilter(player.index) });
+    v.draw(bmp, bmp.width, bmp.height, { grade: frameGrade(player.index) });
     if (keyed) v.chroma(s.chroma, state.chromaBg);
     drawReference(player.exposure);
     return;
@@ -326,7 +343,7 @@ function compose(now) {
     } else {
       v.clear();
       v.draw(video, camera.width, camera.height, flip);
-      if (s.onion.enabled && fr.length) drawOnion(fr.length - 1);
+      if (s.onion.enabled && fr.length) drawOnion(fr.length);
     }
   } else {
     const i = state.playhead;
@@ -338,8 +355,8 @@ function compose(now) {
       v.draw(prev, prev.width, prev.height);
       v.draw(bmp, bmp.width, bmp.height, { op: 'difference' });
     } else {
-      v.draw(bmp, bmp.width, bmp.height, { filter: frameFilter(i) });
-      if (s.onion.enabled && i > 0) drawOnion(i - 1);
+      v.draw(bmp, bmp.width, bmp.height, { grade: frameGrade(i) });
+      if (s.onion.enabled) drawOnion(i);
     }
   }
   if (keyed) v.chroma(s.chroma, state.chromaBg);
@@ -967,7 +984,7 @@ function updateHud(exposure) {
 function updateHudFlags() {
   const s = S();
   const flags = [];
-  if (s.onion.enabled) flags.push(`Cebolla ×${s.onion.count}`);
+  if (s.onion.enabled) flags.push(`Cebolla ×${s.onion.count}${s.onion.next ? ` +${s.onion.next}` : ''}`);
   if (s.mode === 'difference') flags.push('Diferencia');
   if (s.mode === 'chroma') flags.push('Croma');
   if (state.blink) flags.push('Parpadeo');
@@ -1005,7 +1022,7 @@ function updateProjectInfo() {
 }
 
 function setFpsUI(fps) {
-  if (![...els.fps.options].some((o) => Number(o.value) === fps)) els.fps.append(new Option(`${fps} fps`, fps));
+  if (![...els.fps.options].some((o) => Number(o.value) === fps)) els.fps.insertBefore(new Option(`${fps} fps`, fps), els.fps.querySelector('[value="custom"]'));
   els.fps.value = String(fps);
 }
 
@@ -2073,6 +2090,7 @@ function onKeyDown(e) {
 function bindUI() {
   document.body.classList.toggle('is-android', isAndroidApp);
   document.body.classList.toggle('is-desktop-app', isDesktopApp);
+  $('#onionColorsRow').hidden = viewer.kind !== 'gpu';
   if (library.kind === 'disk') {
     $('#diskTools').hidden = false;
     els.saveState.title = 'Tu trabajo se guarda automáticamente en la carpeta de la producción (Documentos/MESORA)';
@@ -2155,7 +2173,13 @@ function bindUI() {
     drawGuides();
   });
 
-  els.fps.addEventListener('change', () => {
+  els.fps.addEventListener('change', async () => {
+    if (els.fps.value === 'custom') {
+      const answer = await askText('Fotogramas por segundo (1 a 60)', String(P().fps));
+      const fps = Math.round(Number(String(answer ?? '').replace(',', '.')));
+      if (!(fps >= 1 && fps <= 60)) { setFpsUI(P().fps); if (answer != null) toast('Escribe un número entre 1 y 60', 'warn'); return; }
+      setFpsUI(fps);
+    }
     P().fps = Number(els.fps.value);
     saveSoon();
     renderTimeline();

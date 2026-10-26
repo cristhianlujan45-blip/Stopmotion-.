@@ -19,7 +19,9 @@ async function launch() {
   const app = await electron.launch({
     // require('electron') returns the binary path and downloads it first if needed (Electron 45 has no postinstall).
     executablePath: require('electron'),
-    args: [repo, '--no-sandbox', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+    args: [repo, '--no-sandbox', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
+      // GPU by software, so the WebGL2 viewer is exercised even on machines without a graphics card.
+      '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
     env: { ...process.env, MESORA_LIBRARY: libDir, MESORA_TEST: '1' },
   });
   const win = await app.firstWindow();
@@ -49,6 +51,7 @@ const listTakes = () => {
   // 1) Primer arranque: la app crea su primera producción en disco.
   let { app, win, errors } = await launch();
   check(await win.evaluate(() => !document.querySelector('#diskTools').hidden), 'los controles de producción en disco están visibles');
+  check(await win.evaluate(() => window.mesora.viewer.kind) === 'gpu', 'el visor usa la GPU (WebGL2)');
   check(listTakes().length === 1, 'primer arranque: una producción con sc010/tk01 en la carpeta');
 
   // 2) Proyecto en el formato antiguo (IndexedDB) → se migra al reiniciar.

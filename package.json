@@ -9,6 +9,7 @@
     "start": "node server.js",
     "test": "node --test tests/*.test.js",
     "test:e2e": "node tests/e2e/desktop.e2e.cjs",
+    "test:viewer": "node tests/e2e/viewer.e2e.cjs",
     "build:web": "node scripts/build-web.mjs",
     "desktop": "npm run build:web && electron .",
     "dist:win": "npm run build:web && electron-builder --win --publish never",

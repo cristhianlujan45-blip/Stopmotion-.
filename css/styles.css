@@ -202,6 +202,10 @@ kbd {
 .group p { margin: 0; }
 details.group { display: block; }
 details.group > * + *:not([hidden]) { margin-top: 9px; }
+details.more > summary { cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; }
+details.more > summary::before { content: '▸ '; }
+details.more[open] > summary::before { content: '▾ '; }
+details.more > * + * { margin-top: 9px; }
 details.group > summary {
   list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
   padding: 2px 0;
@@ -269,6 +273,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .live-btn.on { background: rgba(34,197,94,.2); border-color: var(--live); color: #a7f3c4; }
 .hold-val { min-width: 30px; text-align: center; }
 .mini-num { width: 48px; height: 30px; text-align: center; }
+.fps-select { height: 32px; width: auto; margin-left: 4px; }
 .note-group .ic { width: 16px; height: 16px; color: var(--muted); }
 .note-input { width: 150px; }
 .note-input:disabled { opacity: .45; }
