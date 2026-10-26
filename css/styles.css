@@ -31,6 +31,7 @@ body {
 }
 input, select, textarea, button { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
+body:not(.has-ffmpeg) .only-desktop, body.has-ffmpeg .only-web { display: none !important; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }

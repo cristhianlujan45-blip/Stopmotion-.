@@ -9,6 +9,15 @@ contextBridge.exposeInMainWorld('mesoraDesktop', {
     checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
     openLog: () => ipcRenderer.invoke('app:openLog'),
   },
+  export: {
+    available: () => ipcRenderer.invoke('export:available'),
+    start: (key, spec) => ipcRenderer.invoke('export:start', key, spec),
+    frame: (id, bytes, times) => ipcRenderer.invoke('export:frame', id, bytes, times),
+    finish: (id) => ipcRenderer.invoke('export:finish', id),
+    cancel: (id) => ipcRenderer.invoke('export:cancel', id),
+    wav: (key, spec) => ipcRenderer.invoke('export:wav', key, spec),
+    reveal: (target) => ipcRenderer.invoke('export:reveal', target),
+  },
   library: {
     call: (method, ...args) => ipcRenderer.invoke('library', method, ...args),
     root: () => ipcRenderer.invoke('library:root'),

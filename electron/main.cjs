@@ -1,6 +1,6 @@
 // MESORA Studio desktop app (Windows, macOS, Linux).
 const {
-  app, BrowserWindow, Menu, ipcMain, net, protocol, session, shell, systemPreferences,
+  app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, session, shell, systemPreferences,
 } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const { Library } = require('./core/library.cjs');
 const { initLog, log, logFile } = require('./core/log.cjs');
 const { checkForUpdate } = require('./core/updates.cjs');
+const { serveExport } = require('./export-ipc.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'www');
 const START_URL = 'app://mesora/index.html';
@@ -214,6 +215,8 @@ app.whenReady().then(async () => {
   serveWebApp();
   serveLibrary();
   serveAppInfo();
+  const exports = serveExport({ ipcMain, dialog, shell, library, getWindow: () => mainWindow, fromApp, log });
+  app.on('before-quit', () => { exports.cancelAll(); });
   allowCamera();
   buildMenu();
   if (process.platform === 'darwin' && !process.env.MESORA_TEST) {

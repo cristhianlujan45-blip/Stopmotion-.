@@ -561,6 +561,21 @@ class Library {
     return { id, name: found.name.slice(id.length + 2), type: typeFor(file), bytes: await fsp.readFile(file) };
   }
 
+  /** Where exports of a take go, and the scene/take prefix for their names. */
+  async exportTarget(key) {
+    const st = await this._take(key);
+    const dir = path.join(st.prodDir, 'exports');
+    await fsp.mkdir(dir, { recursive: true });
+    return { dir, prefix: `${st.sceneId}_${st.takeId}` };
+  }
+
+  /** Absolute path of a media file (for FFmpeg), or null. */
+  async blobPath(key, id) {
+    const st = await this._take(key);
+    const found = await this._findBlob(st, id);
+    return found ? path.join(found.dir, found.name) : null;
+  }
+
   // ------------------------------------------------------------ conform
 
   /**

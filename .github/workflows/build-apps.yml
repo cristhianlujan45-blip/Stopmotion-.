@@ -83,6 +83,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Universal FFmpeg (Intel + Apple Silicon)
+        run: bash scripts/ffmpeg-mac-universal.sh
       - run: npm run dist:mac
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false

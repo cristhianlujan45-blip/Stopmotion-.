@@ -13,7 +13,7 @@ import { Timeline } from './timeline.js';
 import {
   totalExposures, expandExposures, exposureStart, formatTime, moveItems, computeSpacing,
 } from './timing.js';
-import { supportedVideoTypes, renderVideo, buildImageSequence, outputSize } from './exporter.js';
+import { supportedVideoTypes, renderVideo, buildImageSequence, outputSize, streamFrames } from './exporter.js';
 import { exportProjectFile, importProjectFile } from './projectio.js';
 import { deflickerGains, gradeFilter } from './grading.js';
 import { saveFile, isAndroidApp, isDesktopApp, isApp } from './platform.js';
@@ -1828,9 +1828,9 @@ function setExportBusy(busy) {
   for (const b of $$('#modalExport .modal-body > .group button')) b.disabled = busy;
 }
 
-function exportRange() {
+function exportRange(select = '#exRange') {
   const fr = frames();
-  if ($('#exRange').value === 'selection') {
+  if ($(select).value === 'selection') {
     const idx = selectedIndices(true);
     if (idx.length) return [idx[0], idx[idx.length - 1] + 1];
   }
@@ -1888,6 +1888,93 @@ async function exportVideo() {
     setExportBusy(false);
     hideProgress();
   }
+}
+
+// ---------------------------------------------------------------- desktop export (FFmpeg)
+
+const exportApi = window.mesoraDesktop?.export;
+
+/** Output size for a resolution menu; asks for the height when "Personalizada…" is chosen. */
+async function exportSize(select) {
+  const p = P();
+  let target = Number(select.value);
+  if (select.value === 'custom') {
+    const answer = await askText('Alto de la imagen en píxeles (por ejemplo 1080)', '1080');
+    if (answer == null) return null;
+    target = Math.round(Number(answer));
+    if (!(target >= 64 && target <= 4320)) { toast('Escribe un alto entre 64 y 4320 píxeles', 'warn'); return null; }
+  }
+  return outputSize(p.width, p.height, target);
+}
+
+/** Film (MP4/ProRes/AVI) or image sequence (PNG/TIFF/JPEG), one picture per exposure, encoded by FFmpeg. */
+async function exportWithFFmpeg(kind) {
+  const fr = frames();
+  if (!fr.length) { toast('No hay fotogramas para exportar', 'warn'); return; }
+  const p = P();
+  const video = kind === 'video';
+  const size = await exportSize(video ? $('#dxRes') : $('#dxImgRes'));
+  if (!size) return;
+  const [a, b] = exportRange('#dxRange');
+  const startExposure = exposureStart(fr, a);
+  const filters = (video ? $('#dxGrade') : $('#dxGradeImg')).checked ? await exportFilters(a, b) : null;
+  const audioSpec = video && $('#dxAudio').checked && p.audio?.blobId
+    ? { blobId: p.audio.blobId, startSeconds: (startExposure - (p.audio.offset || 0)) / p.fps }
+    : null;
+  await saveNow();
+  let job;
+  try {
+    job = await exportApi.start(p.id, {
+      format: video ? $('#dxFormat').value : $('#dxImgFormat').value,
+      width: size.w, height: size.h, fps: p.fps, quality: $('#dxQuality').value,
+      name: p.name, ask: $('#dxAsk').checked, audio: audioSpec,
+    });
+  } catch (err) {
+    toast(`Error al exportar: ${err.message}`, 'error', 6000);
+    return;
+  }
+  if (!job) return; // the user closed the save dialog
+  const controller = new AbortController();
+  state.exportAbort = controller;
+  stopPlayback(false);
+  setExportBusy(true);
+  showProgress('Preparando…', 0);
+  try {
+    const n = await streamFrames({
+      frames: fr.slice(a, b), store, width: size.w, height: size.h, filters,
+      expand: video || $('#dxExpand').checked, signal: controller.signal,
+      write: (bytes, times) => exportApi.frame(job.id, bytes, times),
+      onProgress: (v) => showProgress(`${video ? 'Creando la película' : 'Creando las imágenes'}… ${Math.round(v * 100)}%`, v),
+    });
+    showProgress('Terminando…', 1);
+    const { target } = await exportApi.finish(job.id);
+    toast(video ? 'Película exportada' : `${n} imágenes exportadas`, 'ok', 9000, [
+      { label: 'Mostrar', onClick: () => exportApi.reveal(target).catch((err) => toast(err.message, 'error')) },
+    ]);
+  } catch (err) {
+    await exportApi.cancel(job.id).catch(() => {});
+    if (err.name === 'AbortError') toast('Exportación cancelada', 'warn');
+    else toast(`Error al exportar: ${err.message}`, 'error', 6000);
+  } finally {
+    state.exportAbort = null;
+    setExportBusy(false);
+    hideProgress();
+  }
+}
+
+/** Sound of the exported range as WAV. */
+async function exportWav() {
+  const p = P();
+  if (!p.audio?.blobId) { toast('Esta escena no tiene audio', 'warn'); return; }
+  const fr = frames();
+  const [a, b] = exportRange('#dxRange');
+  const offset = p.audio.offset || 0;
+  const r = await exportApi.wav(p.id, {
+    blobId: p.audio.blobId, name: p.name, ask: $('#dxAsk').checked,
+    startSeconds: ((fr.length ? exposureStart(fr, a) : 0) - offset) / p.fps,
+    durationSeconds: fr.length ? totalExposures(fr.slice(a, b)) / p.fps : 0,
+  });
+  if (r) toast('Sonido exportado', 'ok', 9000, [{ label: 'Mostrar', onClick: () => exportApi.reveal(r.target).catch((err) => toast(err.message, 'error')) }]);
 }
 
 async function exportZip() {
@@ -2220,11 +2307,15 @@ function bindUI() {
     await openProject(p);
     toast(`Proyecto «${p.name}» creado`, 'ok');
   });
-  $('#btnImportProject').addEventListener('click', () => $('#fileImport').click());
 
   $('#btnExport').addEventListener('click', () => { populateExportFormats(); openModal('#modalExport'); });
   $('#btnExportVideo').addEventListener('click', exportVideo);
   $('#btnExportZip').addEventListener('click', exportZip);
+  $('#btnDxVideo').addEventListener('click', () => exportWithFFmpeg('video'));
+  $('#btnDxImages').addEventListener('click', () => exportWithFFmpeg('images'));
+  $('#btnDxConform').addEventListener('click', () => conformTake().catch((err) => toast(err.message, 'error', 6000)));
+  $('#btnDxWav').addEventListener('click', () => exportWav().catch((err) => toast(`Error al exportar: ${err.message}`, 'error', 6000)));
+  $('#dxFormat').addEventListener('change', () => { $('#dxQualityRow').hidden = $('#dxFormat').value !== 'mp4'; });
   $('#btnExportFrame').addEventListener('click', exportCurrentFrame);
   $('#btnExportProject').addEventListener('click', () => exportProject());
   $('#btnExportCancel').addEventListener('click', () => state.exportAbort?.abort());
@@ -2310,6 +2401,12 @@ async function checkForUpdates() {
   }
 }
 
+/** Desktop builds with FFmpeg get the professional export section instead of the browser one. */
+async function detectFFmpeg() {
+  const ok = !!(await exportApi?.available().catch(() => false));
+  document.body.classList.toggle('has-ffmpeg', ok);
+}
+
 async function showAppInfo() {
   const api = window.mesoraDesktop?.app;
   if (!api) return;
@@ -2325,6 +2422,7 @@ async function showAppInfo() {
 async function init() {
   bindUI();
   showAppInfo();
+  detectFFmpeg();
   updateSpacing();
   const prefs = camPrefs();
   if (prefs.resolution) els.camRes.value = prefs.resolution;

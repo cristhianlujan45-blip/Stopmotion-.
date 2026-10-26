@@ -159,6 +159,27 @@ const listTakes = () => {
   const conformDir = fs.readdirSync(exportsDir).find((n) => n.startsWith('conform_sc010_tk01_'));
   check(conformDir && fs.readdirSync(path.join(exportsDir, conformDir)).length === 3, 'conform: 3 imágenes numeradas en exports/');
 
+  // 7b) Exportación profesional con FFmpeg: película MP4 y secuencia PNG, una imagen por exposición.
+  await win.evaluate(() => { const st = window.mesora.state; st.project.frames[0].hold = 2; });
+  await win.keyboard.press('Control+s');
+  await win.click('#btnExport');
+  check(await win.isVisible('#btnDxVideo') && !(await win.isVisible('#btnExportVideo')), 'la ventana Exportar muestra la exportación profesional (FFmpeg)');
+  const exportsBefore = new Set(fs.readdirSync(path.join(libDir, 'Corto E2E', 'exports')));
+  await win.selectOption('#dxRes', '720');
+  await win.click('#btnDxVideo');
+  await win.waitForSelector('.toast.ok:has-text("Película exportada")', { timeout: 60000 });
+  await win.click('#btnDxImages');
+  await win.waitForSelector('.toast.ok:has-text("imágenes exportadas")', { timeout: 60000 });
+  await win.keyboard.press('Escape');
+  const created = fs.readdirSync(path.join(libDir, 'Corto E2E', 'exports')).filter((n) => !exportsBefore.has(n));
+  const mp4 = created.find((n) => n.endsWith('.mp4'));
+  const seq = created.find((n) => !n.includes('.'));
+  const ffmpeg = require('ffmpeg-static');
+  const probe = require('node:child_process').spawnSync(ffmpeg, ['-hide_banner', '-i', path.join(libDir, 'Corto E2E', 'exports', mp4), '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+  const nFrames = Number([...probe.matchAll(/frame=\s*(\d+)/g)].pop()?.[1]);
+  check(/Video: h264.*1280x720/.test(probe) && nFrames === 4, `MP4 H.264 1280×720 con 4 imágenes (3 fotogramas, uno con hold 2): ${nFrames}`);
+  check(seq && fs.readdirSync(path.join(libDir, 'Corto E2E', 'exports', seq)).length === 4, 'secuencia PNG con 4 imágenes en su propia carpeta');
+
   // 8) Proyectos agrupados: un grupo por proyecto y una fila por toma.
   await win.click('#btnProjects');
   await win.waitForSelector('.prod-group');

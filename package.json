@@ -50,6 +50,9 @@
       "package.json"
     ],
     "asar": true,
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
     "win": {
       "target": [
         {
@@ -109,5 +112,8 @@
       "icon": "build/icon.png",
       "artifactName": "MESORA-Studio-Linux-${version}.${ext}"
     }
+  },
+  "dependencies": {
+    "ffmpeg-static": "5.2.0"
   }
 }

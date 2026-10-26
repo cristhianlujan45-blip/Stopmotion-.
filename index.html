@@ -443,7 +443,6 @@
             <option value="8">8 fps</option>
           </select>
           <button class="btn primary" type="submit">Crear</button>
-          <button class="btn ghost" type="button" id="btnImportProject">Importar .mesora</button>
         </form>
         <div class="projects-hint muted small" id="projectsHint" hidden>
           <span>Cada proyecto es una carpeta en <b>Documentos/MESORA</b>, organizada en escenas y tomas. Las fotos originales nunca se borran.</span>
@@ -468,7 +467,82 @@
     <div class="modal-card">
       <header><h2>Exportar</h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
       <div class="modal-body">
-        <section class="group">
+        <section class="group only-desktop">
+          <div class="grid2">
+            <label class="field"><span>Qué exportar</span>
+              <select id="dxRange">
+                <option value="all">Toda la toma</option>
+                <option value="selection">Solo los fotogramas seleccionados</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="dxAsk"> Preguntar dónde guardar (si no, va a la carpeta «exports» del proyecto)</label>
+        </section>
+        <section class="group only-desktop">
+          <h3>Película</h3>
+          <div class="grid2">
+            <label class="field"><span>Formato</span>
+              <select id="dxFormat">
+                <option value="mp4">MP4 (H.264) · para compartir</option>
+                <option value="prores">MOV ProRes 422 HQ · para postproducción</option>
+                <option value="mjpeg">AVI Motion JPEG</option>
+              </select>
+            </label>
+            <label class="field"><span>Resolución</span>
+              <select id="dxRes" class="res-select">
+                <option value="0">Original</option>
+                <option value="2160">4K (2160p)</option>
+                <option value="1440">2K (1440p)</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="custom">Personalizada…</option>
+              </select>
+            </label>
+            <label class="field" id="dxQualityRow"><span>Calidad</span>
+              <select id="dxQuality">
+                <option value="alta">Alta</option>
+                <option value="media">Media</option>
+                <option value="ligera">Ligera (archivo pequeño)</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="dxAudio" checked> Incluir audio</label>
+          <label class="check"><input type="checkbox" id="dxGrade" checked> Aplicar color y estabilización de luz</label>
+          <button class="btn primary" id="btnDxVideo">Exportar película</button>
+        </section>
+        <section class="group only-desktop">
+          <h3>Imágenes</h3>
+          <div class="grid2">
+            <label class="field"><span>Formato</span>
+              <select id="dxImgFormat">
+                <option value="png">PNG (sin pérdida)</option>
+                <option value="tiff">TIFF (sin pérdida)</option>
+                <option value="jpg">JPEG</option>
+              </select>
+            </label>
+            <label class="field"><span>Resolución</span>
+              <select id="dxImgRes" class="res-select">
+                <option value="0">Original</option>
+                <option value="2160">4K (2160p)</option>
+                <option value="1440">2K (1440p)</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="custom">Personalizada…</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="dxExpand" checked> Repetir cada fotograma según su duración</label>
+          <label class="check"><input type="checkbox" id="dxGradeImg" checked> Aplicar color y estabilización de luz</label>
+          <div class="row wrap">
+            <button class="btn" id="btnDxImages">Exportar imágenes</button>
+            <button class="btn" id="btnDxConform" title="Copia las fotos originales de la cámara, sin tocarlas, numeradas en el orden del timeline">Copiar fotos originales en orden</button>
+          </div>
+        </section>
+        <section class="group only-desktop">
+          <h3>Sonido</h3>
+          <button class="btn" id="btnDxWav">Exportar sonido (WAV)</button>
+        </section>
+        <section class="group only-web">
           <h3>Video</h3>
           <div class="grid2">
             <label class="field"><span>Formato</span><select id="exFormat"></select></label>
@@ -501,7 +575,7 @@
           <p class="muted small">La exportación de video se graba en tiempo real: mantén esta pestaña visible.</p>
           <button class="btn primary" id="btnExportVideo">Exportar video</button>
         </section>
-        <section class="group">
+        <section class="group only-web">
           <h3>Secuencia de imágenes (ZIP)</h3>
           <label class="check"><input type="checkbox" id="exExpand" checked> Repetir cada fotograma según su duración</label>
           <label class="check"><input type="checkbox" id="exGradeZip"> Aplicar color y estabilización de luz (si no, se copian las fotos originales)</label>
@@ -511,7 +585,7 @@
           <h3>Otros</h3>
           <div class="row wrap">
             <button class="btn" id="btnExportFrame">Fotograma actual (PNG)</button>
-            <button class="btn" id="btnExportProject">Proyecto completo (.mesora)</button>
+            <button class="btn" id="btnExportProject" title="Un solo archivo con todo el proyecto, para pasarlo a otro equipo o a la versión web o Android">Copia del proyecto (.mesora)</button>
           </div>
         </section>
         <div class="progress" id="exProgress" hidden>
