@@ -10,9 +10,9 @@
     "test:e2e": "node tests/e2e/desktop.e2e.cjs",
     "build:web": "node scripts/build-web.mjs",
     "desktop": "npm run build:web && electron .",
-    "dist:win": "npm run build:web && electron-builder --win",
-    "dist:mac": "npm run build:web && electron-builder --mac",
-    "dist:linux": "npm run build:web && electron-builder --linux",
+    "dist:win": "npm run build:web && electron-builder --win --publish never",
+    "dist:mac": "npm run build:web && electron-builder --mac --publish never",
+    "dist:linux": "npm run build:web && electron-builder --linux --publish never",
     "android:sync": "npm run build:web && cap sync android",
     "android:apk": "npm run android:sync && cd android && ./gradlew assembleRelease",
     "icons": "node scripts/make-icons.cjs"
