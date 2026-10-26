@@ -1,0 +1,14 @@
+{
+  "name": "mesora-studio",
+  "version": "1.0.0",
+  "description": "Estudio de animación stop motion en el navegador",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

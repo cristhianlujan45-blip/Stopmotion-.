@@ -1,0 +1,1726 @@
+import {
+  $, $$, uid, debounce, clamp, sleep, toast, downloadBlob, safeFileName, makeCanvas,
+  canvasToBlob, getPath, setPath, withDefaults, formatDate, isTypingTarget,
+} from './util.js';
+import * as db from './db.js';
+import { Camera } from './camera.js';
+import { FrameStore } from './framestore.js';
+import { History } from './history.js';
+import { AudioTrack } from './audio.js';
+import { Viewer } from './viewer.js';
+import { Timeline } from './timeline.js';
+import {
+  totalExposures, expandExposures, exposureStart, formatTime, moveItems, computeSpacing,
+} from './timing.js';
+import { supportedVideoTypes, renderVideo, buildImageSequence, outputSize } from './exporter.js';
+import { exportProjectFile, importProjectFile } from './projectio.js';
+
+const LS_LAST = 'mesora.lastProject';
+const LS_CAMERA = 'mesora.camera';
+const GRID_CYCLE = ['none', 'thirds', 'quarters', 'fine', 'center'];
+
+function defaultSettings() {
+  return {
+    onion: { enabled: true, count: 1, opacity: 0.4 },
+    mode: 'normal',
+    blinkRate: 4,
+    chroma: { color: '#00b140', threshold: 0.12, softness: 0.06, bgBlobId: null },
+    grid: 'none',
+    mask: 'none',
+    safe: false,
+    peaking: false,
+    peakingThreshold: 60,
+    histogram: false,
+    guidesVisible: true,
+    guideColor: '#ffcc00',
+    guideWidth: 3,
+    flipH: false,
+    flipV: false,
+    average: 1,
+    format: 'jpeg',
+    quality: 0.95,
+    delay: 0,
+    shutterSound: true,
+    shortPlay: 6,
+    loop: false,
+    pingpong: false,
+    timelapseInterval: 5,
+    zoom: 72,
+  };
+}
+
+function newProject(name, fps = 12) {
+  const now = Date.now();
+  return {
+    id: uid(), name, fps, width: 1920, height: 1080,
+    frames: [], audio: null, guides: [], settings: defaultSettings(),
+    createdAt: now, updatedAt: now,
+  };
+}
+
+// ---------------------------------------------------------------- elements
+
+const els = {
+  area: $('#viewerArea'),
+  stage: $('#stage'),
+  stageEmpty: $('#stageEmpty'),
+  stageEmptyMsg: $('#stageEmptyMsg'),
+  countdown: $('#countdown'),
+  flash: $('#flash'),
+  loupe: $('#loupe'),
+  guides: $('#guidesCanvas'),
+  hudMode: $('#hudMode'),
+  hudFrame: $('#hudFrame'),
+  hudTime: $('#hudTime'),
+  hudFlags: $('#hudFlags'),
+  dropHint: $('#dropHint'),
+  projectName: $('#projectName'),
+  camDevice: $('#camDevice'),
+  camRes: $('#camRes'),
+  camToggle: $('#btnCamToggle'),
+  camInfo: $('#camInfo'),
+  camControls: $('#camControls'),
+  histogram: $('#histogram'),
+  capture: $('#btnCapture'),
+  play: $('#tPlay'),
+  live: $('#tLive'),
+  loop: $('#tLoop'),
+  pingpong: $('#tPingpong'),
+  holdVal: $('#holdVal'),
+  undo: $('#tUndo'),
+  redo: $('#tRedo'),
+  fps: $('#fpsSelect'),
+  projectInfo: $('#projectInfo'),
+  audioInfo: $('#audioInfo'),
+  audioOffset: $('#audioOffset'),
+  blink: $('#btnBlink'),
+  draw: $('#btnDraw'),
+  loupeChk: $('#chkLoupe'),
+  timelapse: $('#btnTimelapse'),
+  timelapseInfo: $('#timelapseInfo'),
+};
+
+// ---------------------------------------------------------------- core objects
+
+const state = {
+  project: null,
+  playhead: 0,
+  selection: new Set(),
+  anchor: -1,
+  busy: false,
+  dirty: true,
+  blink: false,
+  loupe: false,
+  loupePos: null,
+  drawing: false,
+  activeStroke: null,
+  timelapseTimer: 0,
+  timelapseCount: 0,
+  chromaBg: null,
+  exportAbort: null,
+  lastHist: 0,
+};
+
+const player = {
+  playing: false, exposures: [], t0: 0, startExposure: 0, step: -1, index: -1,
+  loop: false, pingpong: false, thenLive: false, returnTo: 0,
+};
+
+const camera = new Camera($('#video'));
+const store = new FrameStore({ onLoad: () => { state.dirty = true; } });
+const history = new History();
+const audio = new AudioTrack();
+const viewer = new Viewer({
+  area: els.area, stage: els.stage, main: $('#mainCanvas'), overlay: $('#overlayCanvas'),
+  guides: els.guides, loupe: els.loupe,
+});
+const timeline = new Timeline({
+  wrap: $('#timelineWrap'), root: $('#timeline'), wave: $('#waveform'), store,
+  onSelect: onTimelineSelect,
+  onLive: () => goLive(),
+  onMove: (target) => moveSelected(target),
+});
+
+const P = () => state.project;
+const S = () => state.project.settings;
+const frames = () => state.project.frames;
+const isLive = () => state.playhead >= frames().length;
+
+// ---------------------------------------------------------------- persistence
+
+function saveNow() {
+  const p = P();
+  if (!p) return Promise.resolve();
+  p.updatedAt = Date.now();
+  return db.put('projects', p).catch((err) => toast(`No se pudo guardar: ${err.message}`, 'error'));
+}
+const saveSoon = debounce(saveNow, 400);
+
+async function openProject(p) {
+  stopPlayback(false);
+  stopTimelapse();
+  if (P()) saveSoon.flush();
+  store.clear();
+  history.clear();
+  p.settings = withDefaults(p.settings, defaultSettings());
+  p.guides ??= [];
+  p.frames = (p.frames || []).map((f) => ({ key: f.key || uid(), id: f.id, hold: f.hold || 1 }));
+  state.project = p;
+  state.playhead = p.frames.length;
+  state.selection = new Set();
+  state.anchor = -1;
+  localStorage.setItem(LS_LAST, p.id);
+
+  els.projectName.value = p.name;
+  setFpsUI(p.fps);
+  if (!p.frames.length && camera.active) { p.width = camera.width; p.height = camera.height; }
+  viewer.setSize(p.width, p.height);
+  applySettingsToUI();
+  renderTimeline();
+  await restoreAudio();
+  await restoreChromaBg();
+  refresh();
+  updateProjectInfo();
+  store.collectGarbage(p.id, p.frames.map((f) => f.id)).catch(() => {});
+}
+
+function setProjectSize(w, h) {
+  const p = P();
+  if (p.width === w && p.height === h) return;
+  p.width = w;
+  p.height = h;
+  viewer.setSize(w, h);
+  saveSoon();
+}
+
+// ---------------------------------------------------------------- rendering
+
+function loop(now) {
+  requestAnimationFrame(loop);
+  if (!P()) return;
+  if (player.playing) tickPlayer(now);
+  const liveCam = isLive() && camera.active && !player.playing;
+  if (!state.dirty && !liveCam && !state.blink) return;
+  state.dirty = false;
+  compose(now);
+  const s = S();
+  if (s.histogram && now - state.lastHist > 200) {
+    state.lastHist = now;
+    viewer.histogram(els.histogram);
+  }
+  if (state.loupe && state.loupePos) updateLoupe();
+}
+
+function drawOnion(fromIndex) {
+  const s = S().onion;
+  const fr = frames();
+  for (let k = s.count - 1; k >= 0; k--) {
+    const idx = fromIndex - k;
+    if (idx < 0) continue;
+    const bmp = store.peek(fr[idx].id);
+    if (bmp) viewer.draw(bmp, bmp.width, bmp.height, { alpha: (s.opacity * (s.count - k)) / s.count });
+  }
+}
+
+function compose(now) {
+  const s = S();
+  const fr = frames();
+  const v = viewer;
+  const video = camera.video;
+  const flip = { flipH: s.flipH, flipV: s.flipV };
+  let keyed = s.mode === 'chroma';
+
+  if (player.playing) {
+    const f = fr[player.index];
+    const bmp = f && store.peek(f.id);
+    if (!bmp) return;
+    v.clear();
+    v.draw(bmp, bmp.width, bmp.height);
+    if (keyed) v.chroma(s.chroma, state.chromaBg);
+    return;
+  }
+
+  if (isLive()) {
+    const last = fr.length ? store.peek(fr[fr.length - 1].id) : null;
+    const showLast = state.blink && fr.length && Math.floor((now * s.blinkRate) / 1000) % 2 === 1;
+    if (showLast || !camera.active) {
+      v.clear();
+      if (last) v.draw(last, last.width, last.height);
+      else keyed = false;
+    } else if (s.mode === 'difference' && last) {
+      v.clear();
+      v.draw(last, last.width, last.height);
+      v.draw(video, camera.width, camera.height, { ...flip, op: 'difference' });
+    } else {
+      v.clear();
+      v.draw(video, camera.width, camera.height, flip);
+      if (s.onion.enabled && fr.length) drawOnion(fr.length - 1);
+    }
+  } else {
+    const i = state.playhead;
+    const bmp = store.peek(fr[i].id);
+    if (!bmp) return;
+    v.clear();
+    const prev = i > 0 ? store.peek(fr[i - 1].id) : null;
+    if (s.mode === 'difference' && prev) {
+      v.draw(prev, prev.width, prev.height);
+      v.draw(bmp, bmp.width, bmp.height, { op: 'difference' });
+    } else {
+      v.draw(bmp, bmp.width, bmp.height);
+      if (s.onion.enabled && i > 0) drawOnion(i - 1);
+    }
+  }
+  if (keyed) v.chroma(s.chroma, state.chromaBg);
+  if (s.peaking) v.peaking(s.peakingThreshold);
+}
+
+function drawOverlays() {
+  viewer.drawOverlays(S());
+}
+
+function drawGuides() {
+  viewer.drawGuides(P().guides, S().guidesVisible || state.drawing, state.activeStroke);
+}
+
+viewer.onResize = () => {
+  if (!P()) return;
+  drawOverlays();
+  drawGuides();
+  state.dirty = true;
+};
+
+// ---------------------------------------------------------------- playback
+
+function startPlayback({ start = 0, end = frames().length, loop = S().loop, pingpong = S().pingpong, thenLive = false } = {}) {
+  const fr = frames();
+  if (!fr.length) { toast('Todavía no hay fotogramas', 'warn'); return; }
+  stopPlayback(false);
+  const exposures = expandExposures(fr, start, end);
+  if (!exposures.length) return;
+  Object.assign(player, {
+    playing: true, exposures, t0: performance.now(), startExposure: exposureStart(fr, start),
+    step: -1, index: exposures[0], loop, pingpong, thenLive, returnTo: state.playhead,
+  });
+  playAudioFrom(0);
+  for (let k = 0; k < Math.min(24, exposures.length); k++) store.load(fr[exposures[k]].id);
+  refresh();
+}
+
+function playAudioFrom(pos) {
+  if (!audio.ready || player.pingpong) return;
+  const p = P();
+  audio.play((player.startExposure + pos - (p.audio?.offset || 0)) / p.fps);
+}
+
+function tickPlayer(now) {
+  const fps = P().fps;
+  const n = player.exposures.length;
+  let step = Math.floor(((now - player.t0) * fps) / 1000);
+  let pos;
+  if (player.pingpong && n > 1) {
+    const cycle = 2 * n - 2;
+    if (!player.loop && step >= cycle) { stopPlayback(true); return; }
+    const s = step % cycle;
+    pos = s < n ? s : cycle - s;
+  } else {
+    if (step >= n) {
+      if (!player.loop) { stopPlayback(true); return; }
+      const cycles = Math.floor(step / n);
+      player.t0 += (cycles * n * 1000) / fps;
+      step -= cycles * n;
+      playAudioFrom(step);
+    }
+    pos = step;
+  }
+  if (step === player.step) return;
+  player.step = step;
+  player.index = player.exposures[pos];
+  state.dirty = true;
+  const fr = frames();
+  for (let k = 1; k <= 12; k++) {
+    const e = player.exposures[(pos + k) % n];
+    if (e != null) store.load(fr[e].id);
+  }
+  timeline.update({ playhead: state.playhead, selection: state.selection, playingIndex: player.index });
+  updateHud(player.startExposure + pos);
+}
+
+function stopPlayback(finished) {
+  if (!player.playing) return;
+  player.playing = false;
+  audio.stop();
+  if (finished) state.playhead = player.thenLive ? frames().length : player.returnTo;
+  else {
+    state.playhead = player.index;
+    const f = frames()[player.index];
+    if (f) { state.selection = new Set([f.key]); state.anchor = player.index; }
+  }
+  player.index = -1;
+  refresh();
+}
+
+function togglePlay() {
+  if (player.playing) { stopPlayback(false); return; }
+  const fr = frames();
+  const sel = selectedIndices(true);
+  if (sel.length > 1) { startPlayback({ start: sel[0], end: sel[sel.length - 1] + 1 }); return; }
+  const startAt = isLive() || state.playhead >= fr.length - 1 ? 0 : state.playhead;
+  startPlayback({ start: startAt });
+}
+
+function shortPlay() {
+  const len = frames().length;
+  if (!len) return;
+  startPlayback({ start: Math.max(0, len - S().shortPlay), end: len, loop: false, pingpong: false, thenLive: true });
+}
+
+// ---------------------------------------------------------------- navigation & selection
+
+function selectedIndices(strict = false) {
+  const fr = frames();
+  const out = [];
+  fr.forEach((f, i) => { if (state.selection.has(f.key)) out.push(i); });
+  if (!out.length && !strict && state.playhead < fr.length) out.push(state.playhead);
+  return out;
+}
+
+function setPlayhead(i, { scrub = true } = {}) {
+  if (player.playing) stopPlayback(false);
+  const fr = frames();
+  i = clamp(i, 0, fr.length);
+  state.playhead = i;
+  state.selection = i < fr.length ? new Set([fr[i].key]) : new Set();
+  state.anchor = i < fr.length ? i : -1;
+  if (scrub && i < fr.length) scrubAudio(i);
+  refresh();
+}
+
+const step = (d) => setPlayhead(state.playhead + d);
+const goLive = () => setPlayhead(frames().length);
+
+function extendSelection(d) {
+  const fr = frames();
+  if (!fr.length) return;
+  if (state.anchor < 0) state.anchor = Math.min(state.playhead, fr.length - 1);
+  const i = clamp(state.playhead + d, 0, fr.length - 1);
+  selectRange(state.anchor, i);
+  state.playhead = i;
+  refresh();
+}
+
+function selectRange(a, b) {
+  const fr = frames();
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  state.selection = new Set(fr.slice(lo, hi + 1).map((f) => f.key));
+}
+
+function toggleLiveLast() {
+  const len = frames().length;
+  if (!len) return;
+  setPlayhead(isLive() ? len - 1 : len);
+}
+
+function selectAll() {
+  state.selection = new Set(frames().map((f) => f.key));
+  refresh();
+}
+
+function onTimelineSelect(index, e) {
+  if (player.playing) stopPlayback(false);
+  const fr = frames();
+  const key = fr[index]?.key;
+  if (!key) return;
+  if (e.dragStart) {
+    if (!state.selection.has(key)) { state.selection = new Set([key]); state.anchor = index; }
+    state.playhead = index;
+  } else if (e.shiftKey && state.anchor >= 0) {
+    selectRange(state.anchor, index);
+    state.playhead = index;
+  } else if (e.ctrlKey || e.metaKey) {
+    if (state.selection.has(key)) state.selection.delete(key);
+    else state.selection.add(key);
+    state.anchor = index;
+    state.playhead = index;
+  } else {
+    setPlayhead(index);
+    return;
+  }
+  refresh();
+}
+
+function scrubAudio(index) {
+  if (!audio.ready) return;
+  const p = P();
+  const fr = frames();
+  const t = (exposureStart(fr, index) - (p.audio?.offset || 0)) / p.fps;
+  audio.scrub(t, Math.max(fr[index].hold / p.fps, 0.08));
+}
+
+// ---------------------------------------------------------------- editing
+
+const snapshot = () => ({ frames: frames().map((f) => ({ ...f })), playhead: state.playhead });
+
+function commit(mutate) {
+  history.push(snapshot());
+  mutate(frames());
+  afterFramesChanged();
+}
+
+function afterFramesChanged() {
+  const fr = frames();
+  state.playhead = clamp(state.playhead, 0, fr.length);
+  const keys = new Set(fr.map((f) => f.key));
+  for (const k of state.selection) if (!keys.has(k)) state.selection.delete(k);
+  renderTimeline();
+  saveSoon();
+  refresh();
+  updateProjectInfo();
+}
+
+function renderTimeline() {
+  timeline.render(frames(), S().zoom);
+  drawWave();
+}
+
+function drawWave() {
+  const p = P();
+  timeline.drawWave(audio, p.fps, p.audio?.offset || 0, totalExposures(p.frames));
+}
+
+function deleteSelected() {
+  const idx = selectedIndices();
+  if (!idx.length) return;
+  commit((fr) => {
+    const set = new Set(idx);
+    P().frames = fr.filter((_, i) => !set.has(i));
+    const next = Math.min(idx[0], P().frames.length);
+    state.playhead = next;
+    state.selection = next < P().frames.length ? new Set([P().frames[next].key]) : new Set();
+    state.anchor = next;
+  });
+  toast(idx.length === 1 ? 'Fotograma eliminado' : `${idx.length} fotogramas eliminados`);
+}
+
+function duplicateSelected() {
+  const idx = selectedIndices();
+  if (!idx.length) return;
+  commit((fr) => {
+    const copies = idx.map((i) => ({ key: uid(), id: fr[i].id, hold: fr[i].hold }));
+    const at = idx[idx.length - 1] + 1;
+    fr.splice(at, 0, ...copies);
+    state.selection = new Set(copies.map((c) => c.key));
+    state.playhead = at;
+    state.anchor = at;
+  });
+}
+
+function changeHold(delta) {
+  const idx = selectedIndices();
+  if (!idx.length) return;
+  commit((fr) => { for (const i of idx) fr[i].hold = clamp(fr[i].hold + delta, 1, 99); });
+}
+
+function moveSelected(target) {
+  const idx = selectedIndices();
+  if (!idx.length) return;
+  const keys = idx.map((i) => frames()[i].key);
+  commit((fr) => {
+    P().frames = moveItems(fr, idx, target);
+    const first = P().frames.findIndex((f) => f.key === keys[0]);
+    state.playhead = first;
+    state.anchor = first;
+    state.selection = new Set(keys);
+  });
+}
+
+function undo() {
+  const snap = history.undo(snapshot());
+  if (!snap) return;
+  P().frames = snap.frames;
+  state.playhead = snap.playhead;
+  state.selection = new Set();
+  afterFramesChanged();
+}
+
+function redo() {
+  const snap = history.redo(snapshot());
+  if (!snap) return;
+  P().frames = snap.frames;
+  state.playhead = snap.playhead;
+  state.selection = new Set();
+  afterFramesChanged();
+}
+
+// ---------------------------------------------------------------- capture
+
+async function countdown(seconds) {
+  els.countdown.hidden = false;
+  for (let s = seconds; s > 0; s--) {
+    els.countdown.textContent = s;
+    await sleep(1000);
+  }
+  els.countdown.hidden = true;
+}
+
+function flash() {
+  els.flash.classList.remove('go');
+  void els.flash.offsetWidth;
+  els.flash.classList.add('go');
+}
+
+// Grabbing is instant; encoding and storing run in order in the background,
+// so rapid captures are never dropped.
+let saveChain = Promise.resolve();
+
+async function capture(mode = 'append', { skipDelay = false } = {}) {
+  if (state.busy) return;
+  if (!camera.active) { toast('Conecta una cámara para capturar', 'warn'); return; }
+  if (player.playing) stopPlayback(false);
+  const project = P();
+  const s = S();
+  state.busy = true;
+  let canvas;
+  try {
+    if (s.delay > 0 && !skipDelay) await countdown(s.delay);
+    if (!camera.active) return;
+    canvas = await camera.grab({ average: s.average, flipH: s.flipH, flipV: s.flipV });
+  } catch (err) {
+    toast(`Error al capturar: ${err.message}`, 'error', 4500);
+    return;
+  } finally {
+    els.countdown.hidden = true;
+    state.busy = false;
+  }
+  flash();
+  if (s.shutterSound) audio.shutter();
+
+  const job = saveChain.then(async () => {
+    if (P() !== project) return;
+    if (!frames().length) setProjectSize(canvas.width, canvas.height);
+    const { id } = await store.addFromCanvas(project.id, canvas, { format: s.format, quality: s.quality });
+    if (P() !== project) return;
+    const entry = { key: uid(), id, hold: 1 };
+    commit((fr) => {
+      const at = state.playhead;
+      if (mode === 'replace' && at < fr.length) {
+        entry.hold = fr[at].hold;
+        fr.splice(at, 1, entry);
+        state.selection = new Set([entry.key]);
+      } else if (mode === 'insert' && at < fr.length) {
+        fr.splice(at + 1, 0, entry);
+        state.playhead = at + 1;
+        state.selection = new Set([entry.key]);
+      } else {
+        fr.push(entry);
+        state.playhead = fr.length;
+        state.selection = new Set();
+      }
+    });
+  }).catch((err) => {
+    console.error(err);
+    const quota = err?.name === 'QuotaExceededError';
+    toast(quota ? 'No queda espacio de almacenamiento en el navegador' : `Error al guardar la captura: ${err.message}`, 'error', 4500);
+  });
+  saveChain = job;
+  return job;
+}
+
+// ---------------------------------------------------------------- camera
+
+function camPrefs() {
+  try { return JSON.parse(localStorage.getItem(LS_CAMERA)) || {}; } catch { return {}; }
+}
+
+function saveCamPrefs(patch) {
+  localStorage.setItem(LS_CAMERA, JSON.stringify({ ...camPrefs(), ...patch }));
+}
+
+async function refreshDevices() {
+  const devices = await Camera.listDevices().catch(() => []);
+  const current = camera.track?.getSettings?.().deviceId || camPrefs().deviceId || '';
+  els.camDevice.innerHTML = '';
+  if (!devices.length) {
+    els.camDevice.append(new Option('Ninguna cámara detectada', ''));
+    return;
+  }
+  devices.forEach((d, i) => els.camDevice.append(new Option(d.label || `Cámara ${i + 1}`, d.deviceId)));
+  if (devices.some((d) => d.deviceId === current)) els.camDevice.value = current;
+}
+
+async function startCamera() {
+  if (!Camera.supported) {
+    toast('Este navegador no permite usar la cámara (se necesita HTTPS o localhost)', 'error', 5000);
+    return;
+  }
+  const prefs = camPrefs();
+  const [w, h] = els.camRes.value.split('x').map(Number);
+  els.stageEmptyMsg.textContent = 'Conectando cámara…';
+  try {
+    await camera.start({ deviceId: els.camDevice.value || prefs.deviceId, width: w, height: h });
+  } catch (err) {
+    const msg = err.name === 'NotAllowedError' ? 'Permiso de cámara denegado'
+      : err.name === 'NotFoundError' ? 'No se encontró ninguna cámara'
+      : err.name === 'NotReadableError' ? 'La cámara está en uso por otra aplicación'
+      : `No se pudo abrir la cámara: ${err.message}`;
+    els.stageEmptyMsg.textContent = msg;
+    toast(msg, 'error', 4500);
+    updateCamUI();
+    return;
+  }
+  await refreshDevices();
+  const deviceId = camera.track.getSettings?.().deviceId || '';
+  saveCamPrefs({ deviceId, resolution: els.camRes.value });
+  const saved = prefs.controls?.[deviceId];
+  if (saved && Object.keys(saved).length) {
+    await camera.track.applyConstraints({ advanced: [saved] }).catch(() => {});
+  }
+  const p = P();
+  if (!p.frames.length) setProjectSize(camera.width, camera.height);
+  else if (Math.abs(camera.width / camera.height - p.width / p.height) > 0.01) {
+    toast('La relación de aspecto de la cámara no coincide con la del proyecto', 'warn', 4500);
+  }
+  buildCamControls();
+  updateCamUI();
+  state.dirty = true;
+}
+
+function stopCamera() {
+  camera.stop();
+  stopTimelapse();
+  els.stageEmptyMsg.textContent = 'Cámara desconectada';
+  buildCamControls();
+  updateCamUI();
+  state.dirty = true;
+}
+
+camera.onEnded = () => {
+  toast('Se perdió la señal de la cámara', 'error');
+  stopCamera();
+};
+
+function updateCamUI() {
+  const on = camera.active;
+  els.camToggle.textContent = on ? 'Desconectar' : 'Conectar';
+  els.camInfo.textContent = on ? camera.info() : 'Sin señal';
+  els.capture.disabled = !on;
+  updateStageEmpty();
+}
+
+function updateStageEmpty() {
+  els.stageEmpty.hidden = camera.active || !isLive() || player.playing;
+}
+
+function rememberControl(key, value) {
+  const deviceId = camera.track?.getSettings?.().deviceId;
+  if (!deviceId) return;
+  const prefs = camPrefs();
+  const controls = prefs.controls || {};
+  controls[deviceId] = { ...(controls[deviceId] || {}), [key]: value };
+  saveCamPrefs({ controls });
+}
+
+function rememberAllControls(reset = false) {
+  const deviceId = camera.track?.getSettings?.().deviceId;
+  if (!deviceId) return;
+  const prefs = camPrefs();
+  const controls = prefs.controls || {};
+  if (reset) delete controls[deviceId];
+  else {
+    const s = camera.settings();
+    const saved = {};
+    for (const c of camera.describeControls()) if (s[c.key] != null) saved[c.key] = s[c.key];
+    controls[deviceId] = saved;
+  }
+  saveCamPrefs({ controls });
+}
+
+function buildCamControls() {
+  const root = els.camControls;
+  root.innerHTML = '';
+  if (!camera.active) {
+    root.innerHTML = '<p class="muted small">Conecta una cámara para ver sus controles.</p>';
+    return;
+  }
+  const controls = camera.describeControls();
+  if (!controls.length) {
+    root.innerHTML = '<p class="muted small">Esta cámara no expone controles manuales al navegador. Usa el software del fabricante para fijar exposición y balance.</p>';
+    return;
+  }
+  for (const c of controls) {
+    const label = document.createElement('label');
+    label.className = c.type === 'toggle' ? 'check' : 'field';
+    if (c.type === 'select') {
+      label.innerHTML = `<span>${c.label}</span>`;
+      const sel = document.createElement('select');
+      for (const o of c.options) sel.append(new Option(o.label, o.value));
+      sel.value = c.value;
+      sel.addEventListener('change', async () => {
+        try {
+          await camera.applyControl(c.key, sel.value);
+          rememberControl(c.key, sel.value);
+          buildCamControls();
+        } catch (err) { toast(`No se pudo aplicar: ${err.message}`, 'error'); }
+      });
+      label.append(sel);
+    } else if (c.type === 'range') {
+      label.innerHTML = `<span>${c.label} <output>${fmtNum(c.value)}</output></span>`;
+      const input = document.createElement('input');
+      Object.assign(input, { type: 'range', min: c.min, max: c.max, step: c.step, value: c.value });
+      const out = label.querySelector('output');
+      const apply = debounce(async (v) => {
+        try {
+          await camera.applyControl(c.key, v);
+          rememberControl(c.key, v);
+        } catch (err) { toast(`No se pudo aplicar: ${err.message}`, 'error'); }
+      }, 60);
+      input.addEventListener('input', () => { out.textContent = fmtNum(Number(input.value)); apply(Number(input.value)); });
+      label.append(input);
+    } else {
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = c.value;
+      input.addEventListener('change', () => camera.applyControl(c.key, input.checked).catch(() => {}));
+      label.append(input, document.createTextNode(` ${c.label}`));
+    }
+    root.append(label);
+  }
+}
+
+const fmtNum = (v) => (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 100) / 100);
+
+// ---------------------------------------------------------------- HUD & transport
+
+function refresh() {
+  state.dirty = true;
+  timeline.update({ playhead: state.playhead, selection: state.selection, playingIndex: player.playing ? player.index : -1 });
+  updateHud();
+  updateTransport();
+  updateStageEmpty();
+}
+
+function updateHud(exposure) {
+  const fr = frames();
+  const fps = P().fps;
+  const total = totalExposures(fr);
+  if (player.playing) {
+    els.hudMode.className = 'badge play';
+    els.hudMode.textContent = 'REPRODUCIENDO';
+    els.hudFrame.textContent = `Fotograma ${player.index + 1} / ${fr.length}`;
+    els.hudTime.textContent = `${formatTime(exposure ?? player.startExposure, fps)} / ${formatTime(total, fps)}`;
+  } else if (isLive()) {
+    els.hudMode.className = 'badge live';
+    els.hudMode.textContent = 'EN VIVO';
+    els.hudFrame.textContent = `Siguiente: fotograma ${fr.length + 1}`;
+    els.hudTime.textContent = formatTime(total, fps);
+  } else {
+    els.hudMode.className = 'badge review';
+    els.hudMode.textContent = 'REVISIÓN';
+    els.hudFrame.textContent = `Fotograma ${state.playhead + 1} / ${fr.length}`;
+    els.hudTime.textContent = `${formatTime(exposureStart(fr, state.playhead), fps)} / ${formatTime(total, fps)}`;
+  }
+}
+
+function updateHudFlags() {
+  const s = S();
+  const flags = [];
+  if (s.onion.enabled) flags.push(`Cebolla ×${s.onion.count}`);
+  if (s.mode === 'difference') flags.push('Diferencia');
+  if (s.mode === 'chroma') flags.push('Croma');
+  if (state.blink) flags.push('Parpadeo');
+  if (s.peaking) flags.push('Peaking');
+  if (s.average > 1) flags.push(`Promedio ×${s.average}`);
+  if (s.delay > 0) flags.push(`Retardo ${s.delay}s`);
+  if (state.timelapseTimer) flags.push(`Intervalómetro ${s.timelapseInterval}s`);
+  if (state.drawing) flags.push('Dibujando guías');
+  els.hudFlags.innerHTML = '';
+  for (const f of flags) {
+    const span = document.createElement('span');
+    span.textContent = f;
+    els.hudFlags.append(span);
+  }
+}
+
+function updateTransport() {
+  const s = S();
+  els.play.classList.toggle('on', player.playing);
+  els.play.querySelector('use').setAttribute('href', player.playing ? '#i-pause' : '#i-play');
+  els.live.classList.toggle('on', isLive() && !player.playing);
+  els.loop.classList.toggle('on', s.loop);
+  els.pingpong.classList.toggle('on', s.pingpong);
+  els.undo.disabled = !history.canUndo;
+  els.redo.disabled = !history.canRedo;
+  const idx = selectedIndices();
+  const holds = [...new Set(idx.map((i) => frames()[i].hold))];
+  els.holdVal.textContent = holds.length === 1 ? `×${holds[0]}` : holds.length ? '×…' : '—';
+}
+
+function updateProjectInfo() {
+  const p = P();
+  const total = totalExposures(p.frames);
+  els.projectInfo.textContent = `${p.frames.length} fotogramas · ${total} exposiciones · ${formatTime(total, p.fps)} · ${p.width} × ${p.height}`;
+}
+
+function setFpsUI(fps) {
+  if (![...els.fps.options].some((o) => Number(o.value) === fps)) els.fps.append(new Option(`${fps} fps`, fps));
+  els.fps.value = String(fps);
+}
+
+// ---------------------------------------------------------------- settings binding
+
+function readInput(el) {
+  if (el.type === 'checkbox') return el.checked;
+  if (el.type === 'range' || el.type === 'number' || el.dataset.type === 'number') return Number(el.value);
+  return el.value;
+}
+
+function bindSettings() {
+  for (const el of $$('[data-setting]')) {
+    const path = el.dataset.setting;
+    const live = el.type === 'range' || el.type === 'color';
+    el.addEventListener(live ? 'input' : 'change', () => {
+      const v = readInput(el);
+      if (typeof v === 'number' && !Number.isFinite(v)) return;
+      setPath(S(), path, v);
+      onSettingChanged(path);
+    });
+  }
+}
+
+function applySettingsToUI() {
+  const s = S();
+  for (const el of $$('[data-setting]')) {
+    const v = getPath(s, el.dataset.setting);
+    if (el.type === 'checkbox') el.checked = !!v;
+    else if (v != null) el.value = String(v);
+  }
+  updateOutputs();
+  updateModeUI();
+  els.histogram.hidden = !s.histogram;
+  drawOverlays();
+  drawGuides();
+  updateHudFlags();
+}
+
+function updateOutputs() {
+  const s = S();
+  for (const out of $$('[data-out]')) {
+    const path = out.dataset.out;
+    const v = getPath(s, path);
+    if (/opacity|quality/.test(path)) out.textContent = `${Math.round(v * 100)}%`;
+    else if (path === 'blinkRate') out.textContent = `${v} /s`;
+    else if (path.startsWith('chroma.')) out.textContent = v.toFixed(3);
+    else if (path === 'guideWidth') out.textContent = `${v}px`;
+    else out.textContent = v;
+  }
+}
+
+function onSettingChanged(path) {
+  saveSoon();
+  state.dirty = true;
+  updateOutputs();
+  if (['grid', 'mask', 'safe'].includes(path)) drawOverlays();
+  if (path.startsWith('guide')) drawGuides();
+  if (path === 'histogram') els.histogram.hidden = !S().histogram;
+  if (path === 'zoom') renderTimeline();
+  if (path === 'timelapseInterval' && state.timelapseTimer) { stopTimelapse(); startTimelapse(); }
+  updateHudFlags();
+  updateTransport();
+}
+
+function setSetting(path, value) {
+  setPath(S(), path, value);
+  const el = $(`[data-setting="${path}"]`);
+  if (el) {
+    if (el.type === 'checkbox') el.checked = !!value;
+    else el.value = String(value);
+  }
+  onSettingChanged(path);
+}
+
+function setMode(mode) {
+  S().mode = S().mode === mode && mode !== 'normal' ? 'normal' : mode;
+  updateModeUI();
+  onSettingChanged('mode');
+}
+
+function updateModeUI() {
+  for (const b of $$('#modeSeg button')) b.classList.toggle('active', b.dataset.mode === S().mode);
+}
+
+function toggleBlink() {
+  state.blink = !state.blink;
+  els.blink.classList.toggle('on', state.blink);
+  if (state.blink && !isLive()) goLive();
+  state.dirty = true;
+  updateHudFlags();
+}
+
+function toggleLoupe(force) {
+  state.loupe = force ?? !state.loupe;
+  els.loupeChk.checked = state.loupe;
+  els.stage.classList.toggle('loupe-on', state.loupe);
+  if (!state.loupe) els.loupe.hidden = true;
+  else toast('Lupa activa: pasa el cursor sobre la imagen', 'info', 1800);
+}
+
+// ---------------------------------------------------------------- loupe
+
+els.stage.addEventListener('pointermove', (e) => {
+  if (!state.loupe) return;
+  const r = els.stage.getBoundingClientRect();
+  state.loupePos = {
+    clientX: e.clientX, clientY: e.clientY,
+    u: clamp((e.clientX - r.left) / r.width, 0, 1),
+    v: clamp((e.clientY - r.top) / r.height, 0, 1),
+  };
+  updateLoupe();
+});
+els.stage.addEventListener('pointerleave', () => {
+  state.loupePos = null;
+  els.loupe.hidden = true;
+});
+
+function updateLoupe() {
+  const pos = state.loupePos;
+  if (!pos) return;
+  els.loupe.hidden = false;
+  const s = S();
+  if (isLive() && camera.active && !player.playing) {
+    viewer.drawLoupe(pos.clientX, pos.clientY, pos.u, pos.v, camera.video, camera.width, camera.height, { flipH: s.flipH, flipV: s.flipV });
+    return;
+  }
+  const fr = frames();
+  const i = player.playing ? player.index : state.playhead;
+  const f = fr[i];
+  const bmp = f && (store.peek(f.id, 'full') || store.peek(f.id));
+  viewer.drawLoupe(pos.clientX, pos.clientY, pos.u, pos.v, bmp, bmp?.width, bmp?.height);
+}
+
+// ---------------------------------------------------------------- guides drawing
+
+function toggleDrawing(force) {
+  state.drawing = force ?? !state.drawing;
+  els.guides.classList.toggle('drawing', state.drawing);
+  els.draw.classList.toggle('on', state.drawing);
+  els.draw.textContent = state.drawing ? 'Terminar de dibujar' : 'Dibujar guías';
+  drawGuides();
+  updateHudFlags();
+}
+
+function guidePoint(e) {
+  const r = els.guides.getBoundingClientRect();
+  return [
+    Math.round(clamp((e.clientX - r.left) / r.width, 0, 1) * 10000) / 10000,
+    Math.round(clamp((e.clientY - r.top) / r.height, 0, 1) * 10000) / 10000,
+  ];
+}
+
+els.guides.addEventListener('pointerdown', (e) => {
+  if (!state.drawing) return;
+  els.guides.setPointerCapture(e.pointerId);
+  state.activeStroke = { color: S().guideColor, width: S().guideWidth, points: [guidePoint(e)] };
+  drawGuides();
+});
+els.guides.addEventListener('pointermove', (e) => {
+  const st = state.activeStroke;
+  if (!st) return;
+  const p = guidePoint(e);
+  const last = st.points[st.points.length - 1];
+  if (Math.hypot(p[0] - last[0], p[1] - last[1]) < 0.002) return;
+  st.points.push(p);
+  drawGuides();
+});
+const endStroke = () => {
+  if (!state.activeStroke) return;
+  P().guides.push(state.activeStroke);
+  state.activeStroke = null;
+  saveSoon();
+  drawGuides();
+};
+els.guides.addEventListener('pointerup', endStroke);
+els.guides.addEventListener('pointercancel', endStroke);
+
+// ---------------------------------------------------------------- audio
+
+async function restoreAudio() {
+  audio.clear();
+  const a = P().audio;
+  if (a?.blobId) {
+    try {
+      const rec = await db.get('blobs', a.blobId);
+      if (rec) await audio.load(rec.blob);
+    } catch (err) {
+      toast(`No se pudo cargar el audio: ${err.message}`, 'error');
+    }
+  }
+  updateAudioUI();
+  drawWave();
+}
+
+async function loadAudioFile(file) {
+  const project = P();
+  try {
+    await audio.load(file);
+  } catch {
+    toast('Formato de audio no soportado', 'error');
+    return;
+  }
+  const id = uid();
+  await db.put('blobs', { id, projectId: project.id, name: file.name, blob: file });
+  if (project.audio?.blobId) db.del('blobs', project.audio.blobId).catch(() => {});
+  project.audio = { blobId: id, name: file.name, offset: 0 };
+  saveSoon();
+  updateAudioUI();
+  drawWave();
+  toast(`Audio cargado: ${file.name}`, 'ok');
+}
+
+function clearAudio() {
+  const p = P();
+  if (p.audio?.blobId) db.del('blobs', p.audio.blobId).catch(() => {});
+  p.audio = null;
+  audio.clear();
+  saveSoon();
+  updateAudioUI();
+  drawWave();
+}
+
+function updateAudioUI() {
+  const a = P().audio;
+  if (a && audio.ready) {
+    els.audioInfo.textContent = `${a.name} · ${audio.duration.toFixed(2)} s (${Math.ceil(audio.duration * P().fps)} exposiciones a ${P().fps} fps)`;
+  } else {
+    els.audioInfo.textContent = 'Sin pista de audio. Al moverte por los fotogramas escucharás el fragmento correspondiente.';
+  }
+  els.audioOffset.value = a?.offset || 0;
+}
+
+// ---------------------------------------------------------------- chroma background
+
+async function restoreChromaBg() {
+  state.chromaBg?.close?.();
+  state.chromaBg = null;
+  const id = S().chroma.bgBlobId;
+  if (!id) return;
+  const rec = await db.get('blobs', id).catch(() => null);
+  if (rec) state.chromaBg = await createImageBitmap(rec.blob).catch(() => null);
+  state.dirty = true;
+}
+
+async function setChromaBg(file) {
+  const project = P();
+  const bmp = await createImageBitmap(file).catch(() => null);
+  if (!bmp) { toast('No se pudo leer la imagen', 'error'); return; }
+  const id = uid();
+  await db.put('blobs', { id, projectId: project.id, name: file.name, blob: file });
+  const old = S().chroma.bgBlobId;
+  if (old) db.del('blobs', old).catch(() => {});
+  S().chroma.bgBlobId = id;
+  state.chromaBg?.close?.();
+  state.chromaBg = bmp;
+  if (S().mode !== 'chroma') setMode('chroma');
+  saveSoon();
+  state.dirty = true;
+}
+
+function clearChromaBg() {
+  const old = S().chroma.bgBlobId;
+  if (old) db.del('blobs', old).catch(() => {});
+  S().chroma.bgBlobId = null;
+  state.chromaBg?.close?.();
+  state.chromaBg = null;
+  saveSoon();
+  state.dirty = true;
+}
+
+// ---------------------------------------------------------------- time-lapse
+
+function startTimelapse() {
+  if (!camera.active) { toast('Conecta una cámara para usar el intervalómetro', 'warn'); return; }
+  const sec = Math.max(1, S().timelapseInterval);
+  state.timelapseTimer = setInterval(async () => {
+    if (state.busy) return;
+    await capture('append', { skipDelay: true });
+    state.timelapseCount++;
+    updateTimelapseUI();
+  }, sec * 1000);
+  updateTimelapseUI();
+}
+
+function stopTimelapse() {
+  if (!state.timelapseTimer) return;
+  clearInterval(state.timelapseTimer);
+  state.timelapseTimer = 0;
+  updateTimelapseUI();
+}
+
+function toggleTimelapse() {
+  if (state.timelapseTimer) stopTimelapse();
+  else { state.timelapseCount = 0; startTimelapse(); }
+}
+
+function updateTimelapseUI() {
+  const on = !!state.timelapseTimer;
+  els.timelapse.textContent = on ? 'Detener intervalómetro' : 'Iniciar intervalómetro';
+  els.timelapse.classList.toggle('on', on);
+  els.timelapseInfo.textContent = on || state.timelapseCount
+    ? `${state.timelapseCount} capturas${on ? ` · una cada ${S().timelapseInterval} s` : ''}`
+    : '';
+  if (P()) updateHudFlags();
+}
+
+// ---------------------------------------------------------------- spacing calculator
+
+function updateSpacing() {
+  const dist = Number($('#spDist').value) || 0;
+  const n = clamp(Math.floor(Number($('#spFrames').value) || 1), 1, 500);
+  const rows = computeSpacing(dist, n, $('#spEase').value);
+  const table = $('#spTable');
+  const fmt = (v) => v.toFixed(2);
+  table.innerHTML = '<thead><tr><th>Fotograma</th><th>Posición (mm)</th><th>Mover (mm)</th></tr></thead>';
+  const body = document.createElement('tbody');
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.frame}</td><td>${fmt(r.position)}</td><td>${r.frame ? `+${fmt(r.delta)}` : '—'}</td>`;
+    body.append(tr);
+  }
+  table.append(body);
+
+  const c = $('#spChart');
+  const ctx = c.getContext('2d');
+  const W = c.width, H = c.height, padX = 10, mid = H / 2;
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.beginPath(); ctx.moveTo(padX, mid); ctx.lineTo(W - padX, mid); ctx.stroke();
+  ctx.fillStyle = '#ffb020';
+  for (const r of rows) {
+    const x = padX + (dist ? r.position / dist : r.frame / n) * (W - padX * 2);
+    ctx.fillRect(Math.round(x) - 1, mid - 10, 2, 20);
+  }
+  ctx.fillStyle = '#ff4d3d';
+  ctx.beginPath(); ctx.arc(padX, mid, 4, 0, Math.PI * 2); ctx.arc(W - padX, mid, 4, 0, Math.PI * 2); ctx.fill();
+}
+
+// ---------------------------------------------------------------- import
+
+async function importFiles(fileList) {
+  const files = [...fileList];
+  const images = files
+    .filter((f) => f.type.startsWith('image/'))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  const audios = files.filter((f) => f.type.startsWith('audio/'));
+  const projects = files.filter((f) => /\.(mesora|zip)$/i.test(f.name));
+  for (const f of projects) await importProject(f);
+  if (audios[0]) await loadAudioFile(audios[0]);
+  if (images.length) await importImages(images);
+  if (!images.length && !audios.length && !projects.length) toast('No se reconoció ningún archivo compatible', 'warn');
+}
+
+async function importImages(images) {
+  const project = P();
+  const added = [];
+  let skipped = 0;
+  toast(`Importando ${images.length} imágenes…`);
+  for (const file of images) {
+    try {
+      const r = await store.addFromBlob(project.id, file);
+      if (P() !== project) return;
+      if (!frames().length && !added.length) setProjectSize(r.w, r.h);
+      added.push({ key: uid(), id: r.id, hold: 1 });
+    } catch {
+      skipped++;
+    }
+  }
+  if (!added.length) { toast('No se pudo importar ninguna imagen', 'error'); return; }
+  commit((fr) => {
+    const at = isLive() ? fr.length : state.playhead + 1;
+    fr.splice(at, 0, ...added);
+    state.selection = new Set(added.map((a) => a.key));
+    state.playhead = at;
+    state.anchor = at;
+  });
+  toast(`${added.length} imágenes importadas${skipped ? ` (${skipped} omitidas)` : ''}`, 'ok');
+}
+
+async function importProject(file) {
+  toast(`Importando proyecto ${file.name}…`);
+  try {
+    const p = await importProjectFile(file, store, () => {});
+    await openProject(p);
+    toast(`Proyecto «${p.name}» importado`, 'ok');
+  } catch (err) {
+    toast(`No se pudo importar: ${err.message}`, 'error', 5000);
+  }
+}
+
+// ---------------------------------------------------------------- projects modal
+
+const modalUrls = [];
+
+function openModal(id) {
+  $(id).hidden = false;
+}
+
+function closeModal(modal) {
+  modal.hidden = true;
+  if (modal.id === 'modalProjects') {
+    modalUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
+  }
+}
+
+async function renderProjectList() {
+  const list = (await db.getAll('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const ul = $('#projectList');
+  ul.innerHTML = '';
+  for (const p of list) {
+    const li = document.createElement('li');
+    li.className = `project-item${p.id === P().id ? ' current' : ''}`;
+    const total = totalExposures(p.frames || []);
+    li.innerHTML = `
+      <div class="thumb">${p.frames?.length ? '' : 'Sin fotogramas'}</div>
+      <div class="info">
+        <div class="name"></div>
+        <div class="sub">${p.frames?.length || 0} fotogramas · ${formatTime(total, p.fps)} · ${p.fps} fps</div>
+        <div class="sub">${formatDate(p.updatedAt)}</div>
+      </div>
+      <div class="actions">
+        <button class="btn" data-act="open">Abrir</button>
+        <button class="btn ghost" data-act="rename">Renombrar</button>
+        <button class="btn ghost" data-act="export">Exportar</button>
+        <button class="btn ghost danger" data-act="delete">Eliminar</button>
+      </div>`;
+    li.querySelector('.name').textContent = p.name;
+    if (p.frames?.length) {
+      db.get('frames', p.frames[0].id).then((rec) => {
+        if (!rec) return;
+        const url = URL.createObjectURL(rec.preview);
+        modalUrls.push(url);
+        li.querySelector('.thumb').style.backgroundImage = `url("${url}")`;
+      });
+    }
+    li.querySelector('.thumb').addEventListener('click', () => switchProject(p.id));
+    li.querySelector('.actions').addEventListener('click', async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'open') switchProject(p.id);
+      else if (act === 'rename') {
+        const name = prompt('Nuevo nombre del proyecto', p.name);
+        if (!name?.trim()) return;
+        if (p.id === P().id) { P().name = name.trim(); els.projectName.value = P().name; await saveNow(); }
+        else { p.name = name.trim(); await db.put('projects', p); }
+        renderProjectList();
+      } else if (act === 'export') {
+        await exportProject(p.id === P().id ? P() : p);
+      } else if (act === 'delete') {
+        if (!confirm(`¿Eliminar «${p.name}» y todos sus fotogramas? Esta acción no se puede deshacer.`)) return;
+        await deleteProject(p.id);
+        renderProjectList();
+      }
+    });
+    ul.append(li);
+  }
+}
+
+async function switchProject(id) {
+  const p = await db.get('projects', id);
+  if (!p) return;
+  closeModal($('#modalProjects'));
+  if (p.id !== P().id) await openProject(p);
+}
+
+async function deleteProject(id) {
+  const frameKeys = await db.keysByIndex('frames', 'projectId', id);
+  const blobKeys = await db.keysByIndex('blobs', 'projectId', id);
+  await db.del('frames', frameKeys);
+  await db.del('blobs', blobKeys);
+  await db.del('projects', id);
+  if (id === P().id) {
+    const rest = (await db.getAll('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
+    let next = rest[0];
+    if (!next) { next = newProject('Mi animación'); await db.put('projects', next); }
+    state.project = null;
+    await openProject(next);
+  }
+}
+
+// ---------------------------------------------------------------- export
+
+function showProgress(text, value) {
+  $('#exProgress').hidden = false;
+  $('#exProgressText').textContent = text;
+  $('#exProgressFill').style.width = `${Math.round(value * 100)}%`;
+}
+
+function hideProgress() {
+  $('#exProgress').hidden = true;
+}
+
+function setExportBusy(busy) {
+  for (const b of $$('#modalExport .modal-body > .group button')) b.disabled = busy;
+}
+
+function exportRange() {
+  const fr = frames();
+  if ($('#exRange').value === 'selection') {
+    const idx = selectedIndices(true);
+    if (idx.length) return [idx[0], idx[idx.length - 1] + 1];
+  }
+  return [0, fr.length];
+}
+
+async function exportVideo() {
+  const types = supportedVideoTypes();
+  const type = types[Number($('#exFormat').value)] || types[0];
+  if (!type) { toast('Este navegador no puede grabar video', 'error'); return; }
+  const fr = frames();
+  if (!fr.length) { toast('No hay fotogramas para exportar', 'warn'); return; }
+  const p = P();
+  const [a, b] = exportRange();
+  const { w, h } = outputSize(p.width, p.height, Number($('#exRes').value));
+  const controller = new AbortController();
+  state.exportAbort = controller;
+  stopPlayback(false);
+  setExportBusy(true);
+  showProgress('Preparando…', 0);
+  try {
+    const blob = await renderVideo({
+      frames: fr.slice(a, b), fps: p.fps, store, width: w, height: h, type,
+      bitrate: Number($('#exBitrate').value),
+      audio: $('#exAudio').checked && audio.ready ? audio : null,
+      audioOffset: p.audio?.offset || 0,
+      startExposure: exposureStart(fr, a),
+      signal: controller.signal,
+      onProgress: (v) => showProgress(`Grabando video… ${Math.round(v * 100)}%`, v),
+    });
+    downloadBlob(blob, `${safeFileName(p.name)}.${type.ext}`);
+    toast('Video exportado', 'ok');
+  } catch (err) {
+    if (err.name === 'AbortError') toast('Exportación cancelada', 'warn');
+    else toast(`Error al exportar: ${err.message}`, 'error', 5000);
+  } finally {
+    state.exportAbort = null;
+    setExportBusy(false);
+    hideProgress();
+  }
+}
+
+async function exportZip() {
+  const fr = frames();
+  if (!fr.length) { toast('No hay fotogramas para exportar', 'warn'); return; }
+  const [a, b] = exportRange();
+  setExportBusy(true);
+  try {
+    const blob = await buildImageSequence({
+      frames: fr.slice(a, b), store, expand: $('#exExpand').checked,
+      baseName: safeFileName(P().name).replace(/\s+/g, '_'),
+      onProgress: (v) => showProgress(`Empaquetando imágenes… ${Math.round(v * 100)}%`, v),
+    });
+    downloadBlob(blob, `${safeFileName(P().name)}_secuencia.zip`);
+    toast('Secuencia exportada', 'ok');
+  } catch (err) {
+    toast(`Error al exportar: ${err.message}`, 'error', 5000);
+  } finally {
+    setExportBusy(false);
+    hideProgress();
+  }
+}
+
+async function exportCurrentFrame() {
+  const fr = frames();
+  let canvas;
+  if (!isLive()) {
+    const bmp = await store.decode(fr[state.playhead].id, 'full');
+    canvas = makeCanvas(bmp.width, bmp.height);
+    canvas.getContext('2d').drawImage(bmp, 0, 0);
+    bmp.close?.();
+  } else if (camera.active) {
+    canvas = await camera.grab({ flipH: S().flipH, flipV: S().flipV });
+  } else if (fr.length) {
+    const bmp = await store.decode(fr[fr.length - 1].id, 'full');
+    canvas = makeCanvas(bmp.width, bmp.height);
+    canvas.getContext('2d').drawImage(bmp, 0, 0);
+    bmp.close?.();
+  } else {
+    toast('No hay imagen para exportar', 'warn');
+    return;
+  }
+  const n = isLive() ? fr.length + 1 : state.playhead + 1;
+  downloadBlob(await canvasToBlob(canvas, 'image/png'), `${safeFileName(P().name)}_${String(n).padStart(4, '0')}.png`);
+}
+
+async function exportProject(project = P()) {
+  if (project === P()) await saveNow();
+  setExportBusy(true);
+  toast('Empaquetando proyecto…');
+  try {
+    const blob = await exportProjectFile(project, (v) => showProgress(`Empaquetando proyecto… ${Math.round(v * 100)}%`, v));
+    downloadBlob(blob, `${safeFileName(project.name)}.mesora`);
+    toast('Proyecto exportado', 'ok');
+  } catch (err) {
+    toast(`Error al exportar: ${err.message}`, 'error', 5000);
+  } finally {
+    setExportBusy(false);
+    hideProgress();
+  }
+}
+
+function populateExportFormats() {
+  const sel = $('#exFormat');
+  sel.innerHTML = '';
+  const types = supportedVideoTypes();
+  types.forEach((t, i) => sel.append(new Option(t.label, i)));
+  if (!types.length) sel.append(new Option('No disponible en este navegador', ''));
+  $('#btnExportVideo').disabled = !types.length;
+}
+
+// ---------------------------------------------------------------- keyboard
+
+function onKeyDown(e) {
+  if (isTypingTarget(e.target)) {
+    if (e.key === 'Escape') e.target.blur();
+    return;
+  }
+  const modal = $$('.modal').find((m) => !m.hidden);
+  if (modal) {
+    if (e.key === 'Escape') closeModal(modal);
+    return;
+  }
+  const k = e.key;
+  if (e.ctrlKey || e.metaKey) {
+    switch (k.toLowerCase()) {
+      case 'z': if (e.shiftKey) redo(); else undo(); break;
+      case 'y': redo(); break;
+      case 'd': duplicateSelected(); break;
+      case 'a': selectAll(); break;
+      case 's': saveSoon.flush(); toast('Proyecto guardado', 'ok', 1400); break;
+      default: return;
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.repeat && ['Enter', ' ', '0', '6'].includes(k)) { e.preventDefault(); return; }
+  switch (k) {
+    case 'Enter': capture(e.shiftKey ? 'replace' : e.altKey ? 'insert' : 'append'); break;
+    case ' ': case '0': togglePlay(); break;
+    case '1': step(-1); break;
+    case '3': step(1); break;
+    case 'ArrowLeft': if (e.shiftKey) extendSelection(-1); else step(-1); break;
+    case 'ArrowRight': if (e.shiftKey) extendSelection(1); else step(1); break;
+    case '2': case 'Tab': toggleLiveLast(); break;
+    case '5': case 'End': goLive(); break;
+    case 'Home': setPlayhead(0); break;
+    case '6': shortPlay(); break;
+    case '8': case 'l': case 'L': setSetting('loop', !S().loop); break;
+    case 'p': case 'P': setSetting('pingpong', !S().pingpong); break;
+    case 'o': case 'O': setSetting('onion.enabled', !S().onion.enabled); break;
+    case 'd': case 'D': setMode('difference'); break;
+    case 'b': case 'B': toggleBlink(); break;
+    case 'g': case 'G': setSetting('grid', GRID_CYCLE[(GRID_CYCLE.indexOf(S().grid) + 1) % GRID_CYCLE.length]); break;
+    case 'f': case 'F': setSetting('peaking', !S().peaking); break;
+    case 'z': case 'Z': toggleLoupe(); break;
+    case 'Delete': case 'Backspace': deleteSelected(); break;
+    case '+': case '=': changeHold(1); break;
+    case '-': case '_': changeHold(-1); break;
+    case '?': openModal('#modalHelp'); break;
+    case 'Escape':
+      if (state.drawing) toggleDrawing(false);
+      else if (player.playing) stopPlayback(false);
+      else if (state.blink) toggleBlink();
+      break;
+    default: return;
+  }
+  e.preventDefault();
+}
+
+// ---------------------------------------------------------------- UI wiring
+
+function bindUI() {
+  bindSettings();
+  document.addEventListener('keydown', onKeyDown);
+  // Keep keyboard shortcuts working after clicking buttons.
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b && !b.closest('.modal')) b.blur();
+  });
+  // Browsers require a gesture before audio can play.
+  const unlock = () => { audio.context(); };
+  document.addEventListener('pointerdown', unlock, { once: true });
+  document.addEventListener('keydown', unlock, { once: true });
+
+  $('#btnStartCam').addEventListener('click', startCamera);
+  els.camToggle.addEventListener('click', () => (camera.active ? stopCamera() : startCamera()));
+  els.camDevice.addEventListener('change', () => { if (camera.active || els.camDevice.value) startCamera(); });
+  els.camRes.addEventListener('change', () => { saveCamPrefs({ resolution: els.camRes.value }); if (camera.active) startCamera(); });
+  $('#btnCamLock').addEventListener('click', async () => {
+    try {
+      const ok = await camera.lockAuto();
+      if (ok) { rememberAllControls(); buildCamControls(); toast('Exposición, foco y balance bloqueados', 'ok'); }
+      else toast('Esta cámara no permite bloquear los automáticos desde el navegador', 'warn', 4000);
+    } catch (err) { toast(`No se pudo bloquear: ${err.message}`, 'error'); }
+  });
+  $('#btnCamAuto').addEventListener('click', async () => {
+    try {
+      await camera.resetAuto();
+      rememberAllControls(true);
+      buildCamControls();
+      toast('Controles automáticos restablecidos');
+    } catch (err) { toast(`No se pudo restablecer: ${err.message}`, 'error'); }
+  });
+
+  els.capture.addEventListener('click', () => capture());
+  els.play.addEventListener('click', togglePlay);
+  $('#tFirst').addEventListener('click', () => setPlayhead(0));
+  $('#tPrev').addEventListener('click', () => step(-1));
+  $('#tNext').addEventListener('click', () => step(1));
+  els.live.addEventListener('click', goLive);
+  els.loop.addEventListener('click', () => setSetting('loop', !S().loop));
+  els.pingpong.addEventListener('click', () => setSetting('pingpong', !S().pingpong));
+  $('#tShort').addEventListener('click', shortPlay);
+  $('#tHoldMinus').addEventListener('click', () => changeHold(-1));
+  $('#tHoldPlus').addEventListener('click', () => changeHold(1));
+  $('#tDup').addEventListener('click', duplicateSelected);
+  $('#tDel').addEventListener('click', deleteSelected);
+  els.undo.addEventListener('click', undo);
+  els.redo.addEventListener('click', redo);
+
+  for (const b of $$('#modeSeg button')) b.addEventListener('click', () => setMode(b.dataset.mode));
+  els.blink.addEventListener('click', toggleBlink);
+  els.loupeChk.addEventListener('change', () => toggleLoupe(els.loupeChk.checked));
+  $('#btnChromaBg').addEventListener('click', () => $('#fileChromaBg').click());
+  $('#fileChromaBg').addEventListener('change', (e) => { if (e.target.files[0]) setChromaBg(e.target.files[0]); e.target.value = ''; });
+  $('#btnChromaBgClear').addEventListener('click', clearChromaBg);
+
+  els.draw.addEventListener('click', () => toggleDrawing());
+  $('#btnGuideUndo').addEventListener('click', () => { P().guides.pop(); saveSoon(); drawGuides(); });
+  $('#btnGuideClear').addEventListener('click', () => {
+    if (!P().guides.length || !confirm('¿Borrar todas las guías?')) return;
+    P().guides = [];
+    saveSoon();
+    drawGuides();
+  });
+
+  els.fps.addEventListener('change', () => {
+    P().fps = Number(els.fps.value);
+    saveSoon();
+    drawWave();
+    updateHud();
+    updateProjectInfo();
+    updateAudioUI();
+  });
+  els.projectName.addEventListener('change', () => {
+    P().name = els.projectName.value.trim() || 'Sin título';
+    els.projectName.value = P().name;
+    saveSoon();
+  });
+  els.projectName.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.projectName.blur(); });
+
+  $('#btnAudio').addEventListener('click', () => $('#fileAudio').click());
+  $('#fileAudio').addEventListener('change', (e) => { if (e.target.files[0]) loadAudioFile(e.target.files[0]); e.target.value = ''; });
+  $('#btnAudioClear').addEventListener('click', clearAudio);
+  els.audioOffset.addEventListener('change', () => {
+    if (!P().audio) { els.audioOffset.value = 0; return; }
+    P().audio.offset = Math.max(0, Math.floor(Number(els.audioOffset.value) || 0));
+    saveSoon();
+    drawWave();
+  });
+
+  els.timelapse.addEventListener('click', toggleTimelapse);
+  for (const id of ['#spDist', '#spFrames', '#spEase']) $(id).addEventListener('input', updateSpacing);
+
+  $('#btnImport').addEventListener('click', () => $('#fileImport').click());
+  $('#fileImport').addEventListener('change', (e) => { importFiles(e.target.files); e.target.value = ''; });
+
+  $('#btnProjects').addEventListener('click', () => { renderProjectList(); openModal('#modalProjects'); });
+  $('#formNewProject').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const p = newProject($('#newProjectName').value.trim() || 'Sin título', Number($('#newProjectFps').value));
+    await db.put('projects', p);
+    $('#newProjectName').value = '';
+    closeModal($('#modalProjects'));
+    await openProject(p);
+    toast(`Proyecto «${p.name}» creado`, 'ok');
+  });
+  $('#btnImportProject').addEventListener('click', () => $('#fileImport').click());
+
+  $('#btnExport').addEventListener('click', () => { populateExportFormats(); openModal('#modalExport'); });
+  $('#btnExportVideo').addEventListener('click', exportVideo);
+  $('#btnExportZip').addEventListener('click', exportZip);
+  $('#btnExportFrame').addEventListener('click', exportCurrentFrame);
+  $('#btnExportProject').addEventListener('click', () => exportProject());
+  $('#btnExportCancel').addEventListener('click', () => state.exportAbort?.abort());
+
+  $('#btnHelp').addEventListener('click', () => openModal('#modalHelp'));
+  for (const m of $$('.modal')) {
+    m.addEventListener('click', (e) => {
+      if (e.target === m || e.target.closest('[data-close]')) {
+        if (m.id === 'modalExport' && state.exportAbort) return;
+        closeModal(m);
+      }
+    });
+  }
+
+  for (const tab of $$('.tab')) {
+    tab.addEventListener('click', () => {
+      for (const t of $$('.tab')) t.classList.toggle('active', t === tab);
+      for (const p of $$('.tabpanel')) p.classList.toggle('active', p.dataset.panel === tab.dataset.tab);
+    });
+  }
+  $('#btnPanel').addEventListener('click', () => $('#sidepanel').classList.toggle('open'));
+
+  // Drag & drop files from the OS.
+  let dragDepth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; dragDepth++; els.dropHint.hidden = false; });
+  window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; els.dropHint.hidden = true; } });
+  window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    els.dropHint.hidden = true;
+    importFiles(e.dataTransfer.files);
+  });
+
+  const flush = () => { if (P()) saveSoon.flush(); };
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
+  window.addEventListener('pagehide', flush);
+}
+
+// ---------------------------------------------------------------- init
+
+async function init() {
+  bindUI();
+  updateSpacing();
+  const prefs = camPrefs();
+  if (prefs.resolution) els.camRes.value = prefs.resolution;
+  try {
+    await db.openDB();
+  } catch (err) {
+    toast(`El almacenamiento local no está disponible: ${err.message}`, 'error', 8000);
+    return;
+  }
+  db.persist();
+  let p = null;
+  const last = localStorage.getItem(LS_LAST);
+  if (last) p = await db.get('projects', last);
+  if (!p) p = (await db.getAll('projects')).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  if (!p) { p = newProject('Mi primera animación'); await db.put('projects', p); }
+  await openProject(p);
+  buildCamControls();
+  updateCamUI();
+  await refreshDevices();
+  requestAnimationFrame(loop);
+
+  try {
+    const perm = await navigator.permissions?.query({ name: 'camera' });
+    if (perm?.state === 'granted') startCamera();
+  } catch { /* permissions API unavailable */ }
+
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+}
+
+init();
+
+// Exposed for debugging from the console.
+window.mesora = { state, player, camera, store, audio, viewer };

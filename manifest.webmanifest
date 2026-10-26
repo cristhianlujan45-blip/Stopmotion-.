@@ -1,0 +1,14 @@
+{
+  "name": "MESORA Studio",
+  "short_name": "MESORA",
+  "description": "Estudio de animación stop motion en el navegador",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0e0f12",
+  "theme_color": "#0e0f12",
+  "lang": "es",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
