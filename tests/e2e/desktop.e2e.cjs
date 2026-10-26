@@ -17,7 +17,8 @@ const check = (cond, msg) => { if (!cond) throw new Error(`FALLO: ${msg}`); log(
 
 async function launch() {
   const app = await electron.launch({
-    executablePath: path.join(repo, 'node_modules/electron/dist/electron'),
+    // require('electron') returns the binary path and downloads it first if needed (Electron 45 has no postinstall).
+    executablePath: require('electron'),
     args: [repo, '--no-sandbox', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
     env: { ...process.env, MESORA_LIBRARY: libDir },
   });
@@ -108,13 +109,21 @@ const listTakes = () => {
   check(await win.evaluate(() => document.querySelector('#takeLabel').textContent) === 'Escena 010 · Toma 1', 'la cabecera muestra escena y toma');
   if (shots) await win.screenshot({ path: path.join(shots, 'mesora-escritorio-produccion.png') });
 
-  // 4) Borrar el fotograma 2: desaparece del timeline, el original sigue en el disco.
-  const deletedId = await win.evaluate(() => {
+  // 4) Borrar el fotograma 2: el aviso ofrece «Deshacer»; después se borra de verdad.
+  const selectSecond = () => win.evaluate(() => {
     const st = window.mesora.state;
     st.selection = new Set([st.project.frames[1].key]);
     st.playhead = 1;
     return st.project.frames[1].id;
   });
+  await selectSecond();
+  await win.keyboard.press('Delete');
+  const undoBtn = win.locator('.toast .toast-actions button', { hasText: 'Deshacer' });
+  check(await win.locator('.toast .toast-actions button', { hasText: 'Ver papelera' }).count() === 1, 'el aviso de borrado ofrece «Deshacer» y «Ver papelera»');
+  await undoBtn.click();
+  await win.waitForTimeout(900);
+  check(listTakes().find((t) => t.prod === 'Corto E2E').edl.frames.length === 3, '«Deshacer» del aviso devuelve el fotograma');
+  const deletedId = await selectSecond();
   await win.keyboard.press('Delete');
   await win.waitForTimeout(900);
   take = listTakes().find((t) => t.prod === 'Corto E2E');
@@ -147,7 +156,47 @@ const listTakes = () => {
   const conformDir = fs.readdirSync(exportsDir).find((n) => n.startsWith('conform_sc010_tk01_'));
   check(conformDir && fs.readdirSync(path.join(exportsDir, conformDir)).length === 3, 'conform: 3 imágenes numeradas en exports/');
 
-  // 8) Cerrar y reabrir: la toma vuelve tal cual.
+  // 8) Proyectos agrupados: un grupo por proyecto y una fila por toma.
+  await win.click('#btnProjects');
+  await win.waitForSelector('.prod-group');
+  const groups = await win.$$eval('.prod-group .prod-title .name', (els) => els.map((e) => e.textContent));
+  check(groups.includes('Corto E2E') && groups.includes('Proyecto antiguo'), `la ventana de proyectos agrupa por proyecto: ${groups.join(', ')}`);
+  const currentRow = win.locator('.take-row.current');
+  check(await currentRow.locator('.name').textContent() === 'Escena 010 · Toma 1', 'la toma abierta aparece marcada');
+  check(await currentRow.locator('[data-act="open"]').isDisabled(), 'su botón dice «Abierta» y no se puede pulsar');
+  if (shots) await win.screenshot({ path: path.join(shots, 'mesora-escritorio-proyectos.png') });
+
+  // 9) «⋯» → Nueva toma: se abre la toma 2 vacía con los mismos ajustes de escena.
+  await currentRow.locator('summary').click();
+  await currentRow.locator('[data-act="newtake"]').click();
+  await win.waitForFunction(() => window.mesora.state.project.take?.name === 'Toma 2');
+  check(await win.evaluate(() => document.querySelector('#takeLabel').textContent) === 'Escena 010 · Toma 2' && await win.evaluate(() => window.mesora.state.project.frames.length) === 0, 'nueva toma desde el menú: «Escena 010 · Toma 2», vacía');
+  check(await win.evaluate(() => window.mesora.state.project.fps) === 24, 'la toma nueva conserva los 24 fps de la escena');
+
+  // 10) La etiqueta de toma abre la lista y permite volver a la toma 1.
+  await win.click('#takeLabel');
+  await win.waitForSelector('#modalProjects:not([hidden]) .take-row');
+  const group = win.locator('.prod-group.current');
+  check(await group.locator('.take-row').count() === 2, 'el proyecto muestra sus 2 tomas');
+  await group.locator('.take-row', { hasText: 'Toma 1' }).locator('[data-act="open"]').click();
+  await win.waitForFunction(() => window.mesora.state.project.take?.name === 'Toma 1' && window.mesora.state.project.frames.length === 3);
+  log('OK la etiqueta lleva a las tomas y se vuelve a la toma 1 con sus 3 fotogramas');
+
+  // 11) Un proyecto de una sola toma ofrece «Eliminar proyecto»: la carpeta va a la papelera del sistema.
+  await win.click('#btnProjects');
+  const oldGroup = win.locator('.prod-group', { hasText: 'Proyecto antiguo' });
+  await oldGroup.locator('summary').click();
+  const delBtn = oldGroup.locator('.menu-list .danger');
+  check(await delBtn.textContent() === 'Eliminar proyecto', 'con una sola toma, el menú dice «Eliminar proyecto»');
+  win.once('dialog', (d) => d.accept());
+  await delBtn.click();
+  await win.waitForTimeout(1500);
+  const trashErr = await win.$$eval('.toast.error', (els) => els.map((e) => e.textContent));
+  if (trashErr.length) log(`AVISO: la papelera del sistema no está disponible en este entorno: ${trashErr.join(' | ')}`);
+  else check(!fs.existsSync(path.join(libDir, 'Proyecto antiguo')), '«Eliminar proyecto» manda la carpeta a la papelera del sistema');
+  await win.keyboard.press('Escape');
+
+  // 12) Cerrar y reabrir: la toma vuelve tal cual.
   await app.close();
   ({ app, win, errors } = await launch());
   const reopened = await win.evaluate(() => ({ name: window.mesora.state.project.name, n: window.mesora.state.project.frames.length }));

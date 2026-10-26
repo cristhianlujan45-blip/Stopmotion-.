@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('mesoraDesktop', {
     call: (method, ...args) => ipcRenderer.invoke('library', method, ...args),
     root: () => ipcRenderer.invoke('library:root'),
     trash: (key, level) => ipcRenderer.invoke('library:trash', key, level),
-    reveal: (key) => ipcRenderer.invoke('library:reveal', key),
+    reveal: (key, level) => ipcRenderer.invoke('library:reveal', key, level),
+    revealPath: (dir) => ipcRenderer.invoke('library:revealPath', dir),
   },
 });

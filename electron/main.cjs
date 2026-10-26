@@ -40,11 +40,19 @@ function serveLibrary() {
     if (!fromApp(event)) throw new Error('Origen no permitido');
     const dir = await library.pathFor(key, level);
     await shell.trashItem(dir);
-    library.forget(key);
+    library.forget(key, level);
   });
-  ipcMain.handle('library:reveal', async (event, key) => {
+  ipcMain.handle('library:reveal', async (event, key, level = 'take') => {
     if (!fromApp(event)) throw new Error('Origen no permitido');
-    const target = key ? await library.pathFor(key, 'take') : library.root;
+    const target = key ? await library.pathFor(key, level) : library.root;
+    const err = await shell.openPath(target);
+    if (err) throw new Error(err);
+  });
+  // Opens a folder created by the library (e.g. a conform); only inside the library.
+  ipcMain.handle('library:revealPath', async (event, dir) => {
+    if (!fromApp(event)) throw new Error('Origen no permitido');
+    const target = path.resolve(String(dir));
+    if (!target.startsWith(path.resolve(library.root) + path.sep)) throw new Error('Carpeta fuera de la biblioteca');
     const err = await shell.openPath(target);
     if (err) throw new Error(err);
   });

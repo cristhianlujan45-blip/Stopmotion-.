@@ -598,8 +598,12 @@ class Library {
     throw new Error(`Nivel desconocido: ${level}`);
   }
 
-  forget(key) {
-    this.takes.delete(key);
+  /** Drops cached state after a take (or its whole production) was moved away. */
+  forget(key, level = 'take') {
+    const { prodId } = Library.parseKey(key);
+    for (const k of [...this.takes.keys()]) {
+      if (k === key || (level === 'production' && k.startsWith(`${prodId}/`))) this.takes.delete(k);
+    }
     this.prodDirs.clear();
   }
 }

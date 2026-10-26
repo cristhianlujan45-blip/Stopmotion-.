@@ -72,9 +72,10 @@ Cada panel explica para qué sirve y las opciones avanzadas están plegadas para
 
 **Proyectos y exportación**
 - **App de escritorio:** cada producción es una carpeta en `Documentos/MESORA`, organizada en **Producción › Escena › Toma**. Las fotos originales se guardan como archivos normales (`scenes/sc010/takes/tk01/capture/X1/sc010_tk01_X1_c000001.jpg`) que puedes abrir con cualquier programa. MESORA nunca las sobrescribe ni las borra:
-  - Borrar un fotograma solo lo quita del timeline. Lo recuperas desde **Herramientas › Proyecto › Papelera**.
+  - Borrar un fotograma solo lo quita del timeline. El aviso que aparece ofrece **Deshacer** y **Ver papelera**; la papelera también está en **Herramientas › Proyecto**.
   - **Historial** guarda versiones anteriores del timeline.
-  - **Conform** copia los originales en el orden final, numerados 0001, 0002…
+  - **Copiar en orden** copia los originales en el orden final, numerados 0001, 0002… (lo que en cine se llama *conform*).
+  - En **Proyectos** cada proyecto muestra sus escenas y tomas. «Abrir» abre una toma y el menú **⋯** crea una toma nueva, duplica la escena, exporta o elimina. Al pulsar «Escena · Toma» en la barra superior se llega directo a esa lista.
   - Si la app se cierra de golpe justo después de disparar, al volver a abrir la toma la foto aparece al final con una nota.
   - Los proyectos de versiones anteriores se copian solos a carpetas la primera vez que abres la nueva versión; la copia antigua no se toca.
 - **Navegador y Android:** varios proyectos guardados automáticamente en el navegador (IndexedDB).

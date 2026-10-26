@@ -603,7 +603,12 @@ function deleteSelected() {
     state.selection = next < P().frames.length ? new Set([P().frames[next].key]) : new Set();
     state.anchor = next;
   });
-  toast(idx.length === 1 ? 'Fotograma eliminado' : `${idx.length} fotogramas eliminados`);
+  const disk = library.kind === 'disk';
+  const msg = idx.length === 1 ? 'Fotograma eliminado.' : `${idx.length} fotogramas eliminados.`;
+  toast(disk ? `${msg} La foto original sigue guardada.` : msg, 'info', 6000, [
+    { label: 'Deshacer', onClick: undo },
+    ...(disk ? [{ label: 'Ver papelera', onClick: () => openTrash().catch((err) => toast(err.message, 'error')) }] : []),
+  ]);
 }
 
 function duplicateSelected() {
@@ -1489,6 +1494,7 @@ function closeModal(modal) {
 async function renderProjectList() {
   const list = await library.listProjects();
   const disk = library.kind === 'disk';
+  if (disk) return renderProductionList(list);
   const ul = $('#projectList');
   ul.innerHTML = '';
   for (const p of list) {
@@ -1498,27 +1504,16 @@ async function renderProjectList() {
       <div class="thumb">${p.frameCount ? '' : 'Sin fotogramas'}</div>
       <div class="info">
         <div class="name"></div>
-        <div class="path" hidden></div>
         <div class="sub">${p.frameCount} fotogramas · ${formatTime(p.exposures, p.fps)} · ${p.fps} fps</div>
         <div class="sub">${formatDate(p.updatedAt)}</div>
       </div>
       <div class="actions">
         <button class="btn" data-act="open">Abrir</button>
         <button class="btn ghost" data-act="rename">Renombrar</button>
-        ${disk ? `
-        <button class="btn ghost" data-act="newtake" title="Nueva toma vacía de la misma escena, con sus mismos ajustes">Nueva toma</button>
-        <button class="btn ghost" data-act="newscene" title="Nueva escena en esta producción, con los ajustes de esta escena">Nueva escena</button>
-        <button class="btn ghost" data-act="dupscene" title="Copia la escena completa, con todas sus tomas y fotogramas">Duplicar escena</button>
-        <button class="btn ghost" data-act="reveal">Carpeta</button>` : ''}
         <button class="btn ghost" data-act="export">Exportar</button>
-        <button class="btn ghost danger" data-act="delete">${disk ? 'Eliminar toma' : 'Eliminar'}</button>
+        <button class="btn ghost danger" data-act="delete">Eliminar</button>
       </div>`;
     li.querySelector('.name').textContent = p.name;
-    if (p.scene) {
-      const path = li.querySelector('.path');
-      path.hidden = false;
-      path.textContent = `${p.scene.name} · ${p.take.name}`;
-    }
     if (p.firstFrameId) {
       library.getFrame(p.id, p.firstFrameId, 'preview').then((blob) => {
         if (!blob) return;
@@ -1536,11 +1531,93 @@ async function renderProjectList() {
   }
 }
 
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/** Desktop: one group per project with a row per scene/take; secondary actions live in a "⋯" menu. */
+function renderProductionList(list) {
+  const ul = $('#projectList');
+  ul.className = 'prod-list';
+  ul.innerHTML = '';
+  const groups = new Map();
+  for (const t of list) {
+    if (!groups.has(t.production.id)) groups.set(t.production.id, []);
+    groups.get(t.production.id).push(t);
+  }
+  for (const takes of groups.values()) {
+    const latest = takes[0]; // the list comes most recent first
+    takes.sort((a, b) => a.scene.id.localeCompare(b.scene.id) || a.take.id.localeCompare(b.take.id));
+    const single = takes.length === 1;
+    const scenes = new Set(takes.map((t) => t.scene.id)).size;
+    const group = document.createElement('li');
+    group.className = `prod-group${takes.some((t) => t.id === P().id) ? ' current' : ''}`;
+    group.innerHTML = `
+      <div class="prod-head">
+        <div class="prod-title"><div class="name"></div><div class="sub"></div></div>
+        <button class="btn ghost small-btn" data-act="rename">Renombrar</button>
+        <button class="btn ghost small-btn" data-act="newscene" title="Añade una escena nueva a este proyecto, con los mismos ajustes de cámara y visor">+ Escena</button>
+        <button class="btn ghost small-btn" data-act="revealproject" title="Abre la carpeta de este proyecto">Carpeta</button>
+      </div>
+      <ul class="take-list"></ul>`;
+    group.querySelector('.name').textContent = latest.name;
+    group.querySelector('.sub').textContent = `${plural(scenes, 'escena', 'escenas')} · ${plural(takes.length, 'toma', 'tomas')} · ${formatDate(latest.updatedAt)}`;
+    group.querySelector('.prod-head').addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act) projectAction(act, latest).catch((err) => toast(err.message, 'error', 6000));
+    });
+    const rows = group.querySelector('.take-list');
+    for (const t of takes) {
+      const current = t.id === P().id;
+      const li = document.createElement('li');
+      li.className = `take-row${current ? ' current' : ''}`;
+      li.innerHTML = `
+        <div class="thumb">${t.frameCount ? '' : 'Vacía'}</div>
+        <div class="info"><div class="name"></div><div class="sub">${plural(t.frameCount, 'fotograma', 'fotogramas')} · ${formatTime(t.exposures, t.fps)} · ${t.fps} fps</div></div>
+        <button class="btn small-btn ${current ? '' : 'primary'}" data-act="open" ${current ? 'disabled' : ''}>${current ? 'Abierta' : 'Abrir'}</button>
+        <details class="menu">
+          <summary class="btn ghost small-btn" title="Más acciones" aria-label="Más acciones">⋯</summary>
+          <div class="menu-list">
+            <button data-act="newtake">Nueva toma de esta escena</button>
+            <button data-act="dupscene">Duplicar escena (con sus fotos)</button>
+            <button data-act="export">Exportar copia (.mesora)</button>
+            <button class="danger" data-act="${single ? 'deleteproject' : 'delete'}">${single ? 'Eliminar proyecto' : 'Eliminar esta toma'}</button>
+          </div>
+        </details>`;
+      li.querySelector('.name').textContent = `${t.scene.name} · ${t.take.name}`;
+      if (t.firstFrameId) {
+        library.getFrame(t.id, t.firstFrameId, 'thumb').then((blob) => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          modalUrls.push(url);
+          li.querySelector('.thumb').style.backgroundImage = `url("${url}")`;
+        }).catch(() => {});
+      }
+      li.querySelector('.thumb').addEventListener('click', () => switchProject(t.id));
+      li.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-act]');
+        if (!btn) return;
+        btn.closest('details')?.removeAttribute('open');
+        projectAction(btn.dataset.act, t).catch((err) => toast(err.message, 'error', 6000));
+      });
+      rows.append(li);
+    }
+    ul.append(group);
+  }
+}
+
+/** Opens the most recent take, or a new project when none is left. */
+async function openMostRecent() {
+  const [recent] = await library.listProjects();
+  const opened = (recent && await library.getProject(recent.id).catch(() => null))
+    || { project: await library.createProject(newProject('Mi animación')), report: null };
+  state.project = null;
+  await openProject(opened.project, opened.report);
+}
+
 async function projectAction(act, p) {
   const isCurrent = p.id === P().id;
   if (act === 'open') return switchProject(p.id);
   if (act === 'rename') {
-    const name = (await askText(library.kind === 'disk' ? 'Renombrar producción' : 'Renombrar proyecto', p.name))?.trim();
+    const name = (await askText('Renombrar proyecto', p.name))?.trim();
     if (!name) return;
     const sameProduction = isCurrent || (p.production && p.production.id === P().production?.id);
     if (sameProduction) { P().name = name; els.projectName.value = name; await saveNow(); }
@@ -1560,6 +1637,16 @@ async function projectAction(act, p) {
     await deleteProject(p.id);
     return renderProjectList();
   }
+  if (act === 'deleteproject') {
+    if (!confirm(`¿Eliminar el proyecto «${p.name}»?\n\nSu carpeta, con todas las fotos originales, irá a la papelera del sistema, desde donde se puede recuperar.`)) return;
+    const isOpen = p.production.id === P().production?.id;
+    if (isOpen) saveSoon.cancel();
+    await library.deleteProduction(p.id);
+    if (isOpen) await openMostRecent();
+    toast(`«${p.name}» se movió a la papelera del sistema`, 'ok');
+    return renderProjectList();
+  }
+  if (act === 'revealproject') return library.reveal(p.id, 'production');
   if (isCurrent) await saveNow();
   let opened = null;
   if (act === 'newtake') {
@@ -1574,8 +1661,6 @@ async function projectAction(act, p) {
     toast('Copiando la escena…');
     opened = await library.duplicateScene(p.id, { name });
     toast(`Escena copiada: ${opened.project.scene.name}`, 'ok');
-  } else if (act === 'reveal') {
-    return library.reveal(p.id);
   }
   if (opened) {
     closeModal($('#modalProjects'));
@@ -1600,13 +1685,7 @@ async function switchProject(id) {
 async function deleteProject(id) {
   if (id === P().id) saveSoon.cancel();
   await library.deleteProject(id);
-  if (id === P().id) {
-    const [recent] = await library.listProjects();
-    const opened = (recent && await library.getProject(recent.id).catch(() => null))
-      || { project: await library.createProject(newProject('Mi animación')), report: null };
-    state.project = null;
-    await openProject(opened.project, opened.report);
-  }
+  if (id === P().id) await openMostRecent();
 }
 
 // ---------------------------------------------------------------- production tools (desktop)
@@ -1683,9 +1762,11 @@ async function openHistory() {
 
 async function conformTake() {
   await saveNow();
-  toast('Copiando los originales en orden…');
+  toast('Copiando las fotos originales en orden…');
   const { dir, count } = await library.conform(P().id, { expandHolds: true });
-  toast(`Conform listo: ${count} imágenes en ${dir}`, 'ok', 9000);
+  toast(`${count} fotos copiadas en orden, numeradas desde 0001.`, 'ok', 9000, [
+    { label: 'Abrir carpeta', onClick: () => library.revealPath(dir).catch((err) => toast(err.message, 'error')) },
+  ]);
 }
 
 // ---------------------------------------------------------------- migration from the old storage
@@ -2000,6 +2081,13 @@ function bindUI() {
     $('#btnHistory').addEventListener('click', run(openHistory));
     $('#btnConform').addEventListener('click', run(conformTake));
     $('#btnRevealTake').addEventListener('click', run(() => library.reveal(P().id)));
+    $('#projectsHint').hidden = false;
+    $('#btnRevealLibrary').addEventListener('click', run(() => library.reveal()));
+    els.takeLabel.addEventListener('click', () => { renderProjectList(); openModal('#modalProjects'); });
+    // Close an open "⋯" menu when clicking anywhere else.
+    document.addEventListener('click', (e) => {
+      for (const menu of document.querySelectorAll('details.menu[open]')) if (!menu.contains(e.target)) menu.removeAttribute('open');
+    });
   }
   bindSettings();
   initSections();

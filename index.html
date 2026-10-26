@@ -40,7 +40,7 @@
       <span class="brand-name">MESORA</span><span class="brand-sub">Studio</span>
     </div>
     <input id="projectName" class="project-name" spellcheck="false" aria-label="Nombre del proyecto" title="Haz clic para cambiar el nombre del proyecto">
-    <span class="take-label" id="takeLabel" hidden></span>
+    <button class="take-label" id="takeLabel" hidden title="Tu proyecto se organiza como en el cine: escenas y, dentro de cada una, tomas. Haz clic para ver las tomas, cambiar de una a otra o crear una nueva."></button>
     <span class="save-state" id="saveState" title="Tu trabajo se guarda automáticamente en este navegador"><svg class="ic"><use href="#i-check"/></svg><span>Guardado</span></span>
     <div class="topbar-actions">
       <button id="btnProjects" class="btn ghost">Proyectos</button>
@@ -311,7 +311,7 @@
           <div class="row wrap" id="diskTools" hidden>
             <button class="btn" id="btnTrash" title="Fotogramas borrados de esta toma. Sus originales siguen en el disco y se pueden restaurar.">Papelera</button>
             <button class="btn" id="btnHistory" title="Versiones anteriores del timeline de esta toma">Historial</button>
-            <button class="btn" id="btnConform" title="Copia los originales en el orden del timeline, numerados 0001, 0002…, a la carpeta exports de la producción">Conform</button>
+            <button class="btn" id="btnConform" title="Copia las fotos originales en el orden del timeline, numeradas 0001, 0002…, a la carpeta «exports» del proyecto (lo que en cine se llama «conform»). Las originales no se tocan.">Copiar en orden</button>
             <button class="btn" id="btnRevealTake" title="Abre la carpeta de esta toma">Abrir carpeta</button>
           </div>
         </details>
@@ -429,6 +429,10 @@
           <button class="btn primary" type="submit">Crear</button>
           <button class="btn ghost" type="button" id="btnImportProject">Importar .mesora</button>
         </form>
+        <div class="projects-hint muted small" id="projectsHint" hidden>
+          <span>Cada proyecto es una carpeta en <b>Documentos/MESORA</b>, organizada en escenas y tomas. Las fotos originales nunca se borran.</span>
+          <button class="btn ghost small-btn" type="button" id="btnRevealLibrary">Abrir la carpeta de proyectos</button>
+        </div>
         <ul class="project-list" id="projectList"></ul>
       </div>
     </div>

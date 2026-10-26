@@ -138,6 +138,11 @@ const diskLibrary = {
     return bridge.trash(id, 'take');
   },
 
+  /** Sends the whole project folder (all scenes and takes) to the system trash. */
+  deleteProduction(id) {
+    return bridge.trash(id, 'production');
+  },
+
   async addFrame(projectId, { full, preview, thumb, w, h, luma }) {
     const [fullBytes, previewBytes, thumbBytes] = await Promise.all([full, preview, thumb].map((b) => b && bytesOf(b)));
     const { id } = await bridge.call('ingestCapture', projectId, {
@@ -189,7 +194,8 @@ const diskLibrary = {
   restoreHistory: (key, version) => bridge.call('restoreHistory', key, version),
   conform: (key, opts) => bridge.call('conform', key, opts),
   markMigrated: (key, fromId) => bridge.call('markMigrated', key, fromId),
-  reveal: (key) => bridge.reveal(key),
+  reveal: (key, level) => bridge.reveal(key, level),
+  revealPath: (dir) => bridge.revealPath(dir),
   root: () => bridge.root(),
 };
 
