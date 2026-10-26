@@ -399,6 +399,15 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .help-grid dt { white-space: nowrap; }
 .help-grid dd { margin: 0; color: #c5c9d2; }
 
+.modal-card.small-card { width: min(420px, 100%); }
+.ask-form { display: flex; flex-direction: column; gap: 14px; padding-top: 16px; }
+.ask-form input { width: 100%; height: 36px; }
+.ask-actions { justify-content: flex-end; }
+
+/* Android app: touch-first, no keyboard hints or fullscreen button */
+.is-android #btnFullscreen, .is-android .hud-flags kbd, .is-android .check kbd, .is-android .segmented kbd { display: none; }
+.is-android .btn { min-height: 36px; }
+
 .help-top { display: flex; gap: 14px; align-items: center; justify-content: space-between; padding-top: 12px; flex-wrap: wrap; }
 .help-top p { margin: 0; flex: 1; min-width: 240px; }
 
@@ -459,4 +468,29 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .capture-btn span:last-child { display: none; }
   .capture-btn .dot { width: 26px; height: 26px; }
   .hud { flex-wrap: wrap; right: 12px; }
+}
+
+/* Short screens (phones in landscape): compact bars, more room for the image */
+@media (max-height: 560px) {
+  body { grid-template-rows: 42px minmax(0, 1fr) auto; }
+  .topbar { gap: 8px; }
+  .transport { padding: 4px 10px; gap: 8px; }
+  .transport .btn { height: 30px; }
+  .transport .btn.icon { width: 30px; }
+  .grow-space { display: none; }
+  .timeline-wrap { padding: 4px 10px 4px; }
+  .ruler { height: 14px; margin-bottom: 4px; }
+  .ruler span { height: 14px; line-height: 12px; }
+  .timeline, .cell { height: 58px; }
+  .cell img { height: 44px; }
+  .cell .meta { height: 14px; }
+  .hud { top: 6px; gap: 6px; }
+  .hud-flags { display: none; }
+  .capture-btn {
+    position: fixed; right: 16px; top: 50%; transform: translateY(-50%); z-index: 30;
+    width: 64px; height: 64px; padding: 0; justify-content: center; border-radius: 50%;
+  }
+  .capture-btn:active { transform: translateY(-50%) scale(.95); }
+  .capture-btn span:last-child { display: none; }
+  .capture-btn .dot { width: 26px; height: 26px; }
 }

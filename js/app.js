@@ -1,5 +1,5 @@
 import {
-  $, $$, uid, debounce, clamp, sleep, toast, downloadBlob, safeFileName, makeCanvas,
+  $, $$, uid, debounce, clamp, sleep, toast, safeFileName, makeCanvas,
   canvasToBlob, getPath, setPath, withDefaults, formatDate, isTypingTarget,
 } from './util.js';
 import * as db from './db.js';
@@ -15,6 +15,7 @@ import {
 import { supportedVideoTypes, renderVideo, buildImageSequence, outputSize } from './exporter.js';
 import { exportProjectFile, importProjectFile } from './projectio.js';
 import { deflickerGains, gradeFilter } from './grading.js';
+import { saveFile, isAndroidApp, isDesktopApp, isApp } from './platform.js';
 
 const LS_LAST = 'mesora.lastProject';
 const LS_CAMERA = 'mesora.camera';
@@ -768,11 +769,13 @@ async function startCamera() {
   }
   buildCamControls();
   updateCamUI();
+  keepAwake(true);
   state.dirty = true;
 }
 
 function stopCamera() {
   camera.stop();
+  keepAwake(false);
   stopTimelapse();
   els.stageEmptyMsg.textContent = 'Cámara desconectada';
   buildCamControls();
@@ -1453,6 +1456,7 @@ function openModal(id) {
 }
 
 function closeModal(modal) {
+  if (modal.id === 'modalAsk') { $('#btnAskCancel').onclick?.(); return; }
   modal.hidden = true;
   if (modal.id === 'modalProjects') {
     modalUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
@@ -1494,7 +1498,7 @@ async function renderProjectList() {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'open') switchProject(p.id);
       else if (act === 'rename') {
-        const name = prompt('Nuevo nombre del proyecto', p.name);
+        const name = await askText('Renombrar proyecto', p.name);
         if (!name?.trim()) return;
         if (p.id === P().id) { P().name = name.trim(); els.projectName.value = P().name; await saveNow(); }
         else { p.name = name.trim(); await db.put('projects', p); }
@@ -1570,6 +1574,11 @@ async function exportFilters(a, b) {
   return out.every((f) => f === 'none') ? null : out;
 }
 
+async function deliver(blob, filename, message) {
+  const where = await saveFile(blob, filename);
+  toast(where ? `${message} en ${where}` : message, 'ok', 4000);
+}
+
 async function exportVideo() {
   const types = supportedVideoTypes();
   const type = types[Number($('#exFormat').value)] || types[0];
@@ -1595,8 +1604,7 @@ async function exportVideo() {
       signal: controller.signal,
       onProgress: (v) => showProgress(`Grabando video… ${Math.round(v * 100)}%`, v),
     });
-    downloadBlob(blob, `${safeFileName(p.name)}.${type.ext}`);
-    toast('Video exportado', 'ok');
+    await deliver(blob, `${safeFileName(p.name)}.${type.ext}`, 'Video exportado');
   } catch (err) {
     if (err.name === 'AbortError') toast('Exportación cancelada', 'warn');
     else toast(`Error al exportar: ${err.message}`, 'error', 5000);
@@ -1619,8 +1627,7 @@ async function exportZip() {
       baseName: safeFileName(P().name).replace(/\s+/g, '_'),
       onProgress: (v) => showProgress(`Empaquetando imágenes… ${Math.round(v * 100)}%`, v),
     });
-    downloadBlob(blob, `${safeFileName(P().name)}_secuencia.zip`);
-    toast('Secuencia exportada', 'ok');
+    await deliver(blob, `${safeFileName(P().name)}_secuencia.zip`, 'Secuencia exportada');
   } catch (err) {
     toast(`Error al exportar: ${err.message}`, 'error', 5000);
   } finally {
@@ -1649,7 +1656,7 @@ async function exportCurrentFrame() {
     return;
   }
   const n = isLive() ? fr.length + 1 : state.playhead + 1;
-  downloadBlob(await canvasToBlob(canvas, 'image/png'), `${safeFileName(P().name)}_${String(n).padStart(4, '0')}.png`);
+  await deliver(await canvasToBlob(canvas, 'image/png'), `${safeFileName(P().name)}_${String(n).padStart(4, '0')}.png`, 'Fotograma exportado');
 }
 
 async function exportProject(project = P()) {
@@ -1658,8 +1665,7 @@ async function exportProject(project = P()) {
   toast('Empaquetando proyecto…');
   try {
     const blob = await exportProjectFile(project, (v) => showProgress(`Empaquetando proyecto… ${Math.round(v * 100)}%`, v));
-    downloadBlob(blob, `${safeFileName(project.name)}.mesora`);
-    toast('Proyecto exportado', 'ok');
+    await deliver(blob, `${safeFileName(project.name)}.mesora`, 'Proyecto exportado');
   } catch (err) {
     toast(`Error al exportar: ${err.message}`, 'error', 5000);
   } finally {
@@ -1696,6 +1702,40 @@ function initSections() {
   }
 }
 
+/** In-app text dialog (window.prompt is not available in the desktop app). */
+function askText(title, value = '') {
+  const modal = $('#modalAsk');
+  const input = $('#askInput');
+  $('#askTitle').textContent = title;
+  input.value = value;
+  openModal('#modalAsk');
+  input.focus();
+  input.select();
+  return new Promise((resolve) => {
+    const finish = (result) => {
+      modal.hidden = true;
+      $('#formAsk').onsubmit = null;
+      $('#btnAskCancel').onclick = null;
+      resolve(result);
+    };
+    $('#formAsk').onsubmit = (e) => { e.preventDefault(); finish(input.value); };
+    $('#btnAskCancel').onclick = () => finish(null);
+  });
+}
+
+// Keep the screen awake while the camera is on (phones and laptops dim otherwise).
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock && document.visibilityState === 'visible') {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!on && wakeLock) {
+      await wakeLock.release();
+    }
+  } catch { /* not allowed right now */ }
+}
+
 function showWelcome() {
   for (const m of $$('.modal')) m.hidden = true;
   openModal('#modalWelcome');
@@ -1704,11 +1744,14 @@ function showWelcome() {
 // ---------------------------------------------------------------- keyboard
 
 function onKeyDown(e) {
+  const modal = $$('.modal').reverse().find((m) => !m.hidden);
   if (isTypingTarget(e.target)) {
-    if (e.key === 'Escape') e.target.blur();
+    if (e.key === 'Escape') {
+      if (modal?.contains(e.target)) closeModal(modal);
+      else e.target.blur();
+    }
     return;
   }
-  const modal = $$('.modal').find((m) => !m.hidden);
   if (modal) {
     if (e.key === 'Escape') closeModal(modal);
     return;
@@ -1770,6 +1813,8 @@ function onKeyDown(e) {
 // ---------------------------------------------------------------- UI wiring
 
 function bindUI() {
+  document.body.classList.toggle('is-android', isAndroidApp);
+  document.body.classList.toggle('is-desktop-app', isDesktopApp);
   bindSettings();
   initSections();
   document.addEventListener('keydown', onKeyDown);
@@ -1945,7 +1990,10 @@ function bindUI() {
   });
 
   const flush = () => { if (P()) saveSoon.flush(); };
-  document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) flush();
+    else if (camera.active) keepAwake(true);
+  });
   window.addEventListener('pagehide', flush);
 }
 
@@ -1984,7 +2032,8 @@ async function init() {
     if (perm?.state === 'granted') startCamera();
   } catch { /* permissions API unavailable */ }
 
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  // Offline cache for the web version; the apps already ship their files.
+  if ('serviceWorker' in navigator && !isApp && /^https?:$/.test(location.protocol)) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 }

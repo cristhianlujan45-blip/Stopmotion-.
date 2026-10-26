@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Base application theme (dark, like the app). -->
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">#15171C</item>
+        <item name="colorPrimaryDark">#0E0F12</item>
+        <item name="colorAccent">#FF4D3D</item>
+        <item name="android:windowBackground">@color/mesora_background</item>
+        <item name="android:statusBarColor">#0E0F12</item>
+        <item name="android:navigationBarColor">#0E0F12</item>
+    </style>
+
+    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:background">@null</item>
+        <item name="android:windowBackground">@color/mesora_background</item>
+        <item name="android:statusBarColor">#0E0F12</item>
+        <item name="android:navigationBarColor">#0E0F12</item>
+    </style>
+
+    <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
+        <item name="android:background">@drawable/splash</item>
+        <item name="windowSplashScreenBackground">@color/mesora_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
+    </style>
+</resources>

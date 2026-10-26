@@ -1,0 +1,14 @@
+{
+  "appId": "com.mesora.studio",
+  "appName": "MESORA Studio",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0e0f12"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "native",
+      "style": "DARK"
+    }
+  }
+}

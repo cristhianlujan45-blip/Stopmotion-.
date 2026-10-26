@@ -1,0 +1,131 @@
+name: Apps (Windows, Mac, Android)
+
+# Builds the desktop apps and the Android APK on every push and publishes them:
+# - pushing a tag like v1.2.0 creates a versioned release;
+# - any other push updates the "ultima-version" pre-release.
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  mac:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run android:apk
+      - name: Rename APK
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p out
+          cp android/app/build/outputs/apk/release/app-release.apk "out/MESORA-Studio-Android-$VERSION.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: out/*.apk
+          if-no-files-found: error
+
+  release:
+    needs: [windows, mac, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la artifacts
+          NOTES="Descargas de MESORA Studio:
+          - Windows: MESORA-Studio-Windows-Instalador (instala) o MESORA-Studio-Windows-Portable (sin instalar).
+          - Mac: MESORA-Studio-Mac (.dmg, Intel y Apple Silicon).
+          - Android: MESORA-Studio-Android (.apk).
+          Instrucciones de instalación en el README del repositorio."
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+            gh release create "$TAG" artifacts/* --title "MESORA Studio $TAG" --notes "$NOTES"
+          else
+            TAG="ultima-version"
+            git tag -f "$TAG"
+            git push -f origin "refs/tags/$TAG"
+            gh release view "$TAG" >/dev/null 2>&1 || \
+              gh release create "$TAG" --prerelease --title "MESORA Studio · última versión" --notes "$NOTES"
+            for old in $(gh release view "$TAG" --json assets -q '.assets[].name'); do
+              gh release delete-asset "$TAG" "$old" -y
+            done
+            gh release upload "$TAG" artifacts/* --clobber
+          fi

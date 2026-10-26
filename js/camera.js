@@ -74,6 +74,7 @@ export class Camera {
       frameRate: { ideal: 30 },
     };
     if (deviceId) video.deviceId = { exact: deviceId };
+    else video.facingMode = { ideal: 'environment' }; // rear camera on phones
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: false, video });

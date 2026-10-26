@@ -567,6 +567,19 @@
     </div>
   </div>
 
+  <div class="modal" id="modalAsk" hidden>
+    <div class="modal-card small-card">
+      <header><h2 id="askTitle"></h2></header>
+      <form class="modal-body ask-form" id="formAsk">
+        <input id="askInput" maxlength="120" required>
+        <div class="row ask-actions">
+          <button type="button" class="btn ghost" id="btnAskCancel">Cancelar</button>
+          <button type="submit" class="btn primary">Aceptar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="toasts" class="toasts" aria-live="polite"></div>
   <video id="video" class="offscreen-video" playsinline muted></video>
   <script type="module" src="js/app.js"></script>

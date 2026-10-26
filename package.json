@@ -1,14 +1,109 @@
 {
   "name": "mesora-studio",
   "version": "1.0.0",
-  "description": "Estudio de animación stop motion en el navegador",
+  "description": "Estudio de animación stop motion para Windows, Mac, Android y web",
   "type": "module",
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "build:web": "node scripts/build-web.mjs",
+    "desktop": "npm run build:web && electron .",
+    "dist:win": "npm run build:web && electron-builder --win",
+    "dist:mac": "npm run build:web && electron-builder --mac",
+    "dist:linux": "npm run build:web && electron-builder --linux",
+    "android:sync": "npm run build:web && cap sync android",
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleRelease",
+    "icons": "node scripts/make-icons.cjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/cli": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/share": "^8.0.3",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "productName": "MESORA Studio",
+  "author": "MESORA",
+  "homepage": "https://github.com/cristhianlujan45-blip/MESORA-",
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.mesora.studio",
+    "productName": "MESORA Studio",
+    "copyright": "MESORA",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "www/**",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MESORA Studio",
+      "artifactName": "MESORA-Studio-Windows-Instalador-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "MESORA-Studio-Windows-Portable-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.video",
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "artifactName": "MESORA-Studio-Mac-${version}.${ext}",
+      "extendInfo": {
+        "NSCameraUsageDescription": "MESORA Studio usa la cámara para capturar los fotogramas de tu animación.",
+        "NSMicrophoneUsageDescription": "MESORA Studio no graba audio con el micrófono, pero macOS puede pedir este permiso al abrir la cámara."
+      }
+    },
+    "dmg": {
+      "title": "MESORA Studio"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Video",
+      "icon": "build/icon.png",
+      "artifactName": "MESORA-Studio-Linux-${version}.${ext}"
+    }
   }
 }

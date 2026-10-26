@@ -1,9 +1,22 @@
 # MESORA Studio
 
-Un estudio de animación **stop motion** que funciona en el navegador. Es gratuito, no se instala, funciona sin conexión y no tiene dependencias.
-Captura con tu webcam o una cámara USB/HDMI (con capturadora), anima con papel cebolla y exporta a MP4/WebM o a secuencia de imágenes.
+Un estudio de animación **stop motion** para **Windows, Mac, Android** y el navegador. Es gratuito.
+Captura con tu webcam, una cámara USB, tu réflex en modo webcam o la cámara del móvil. Anima con papel cebolla y exporta a MP4/WebM o a secuencia de imágenes.
 
-## Cómo usarlo
+## Descargar e instalar
+
+Las descargas están en la página de **[Releases](https://github.com/cristhianlujan45-blip/MESORA-/releases)** del repositorio. Se generan solas en cada cambio, mediante GitHub Actions.
+
+| Sistema | Archivo | Cómo instalar |
+| --- | --- | --- |
+| **Windows 10/11** | `MESORA-Studio-Windows-Instalador-x.y.z.exe` | Ábrelo y sigue el asistente. Si Windows muestra «Windows protegió su PC», pulsa **Más información → Ejecutar de todas formas** (aparece porque la app no tiene firma de pago). |
+| Windows sin instalar | `MESORA-Studio-Windows-Portable-x.y.z.exe` | Doble clic y listo. Sirve para un pendrive o un equipo sin permisos de administrador. |
+| **Mac** (Intel y Apple Silicon) | `MESORA-Studio-Mac-x.y.z.dmg` | Abre el .dmg y arrastra MESORA Studio a **Aplicaciones**. La primera vez macOS dirá que no puede verificar al desarrollador: ve a **Ajustes del Sistema → Privacidad y seguridad** y pulsa **Abrir igualmente**. Después acepta el permiso de cámara. |
+| **Android 7+** | `MESORA-Studio-Android-x.y.z.apk` | Descarga el APK en el móvil y ábrelo. Si lo pide, permite **instalar apps de origen desconocido** para tu navegador o gestor de archivos. Las exportaciones se guardan en **Documentos/MESORA** y se pueden compartir al momento. |
+
+Las versiones nuevas se instalan encima de la anterior sin perder tus proyectos.
+
+### Versión web
 
 ```bash
 npm start          # abre http://localhost:5173
@@ -12,7 +25,7 @@ npm start          # abre http://localhost:5173
 También se puede publicar tal cual en cualquier hosting estático con HTTPS (GitHub Pages, Netlify…).
 La cámara solo está disponible en `https://` o `localhost`. Abrir `index.html` directamente desde el disco no funciona.
 
-Requisitos: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes. Node 18+ solo hace falta para el servidor local y los tests.
+Navegadores: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes.
 
 ## Primeros pasos
 
@@ -103,11 +116,11 @@ Las teclas numéricas siguen la disposición del teclado numérico que usan los 
 
 ## Limitaciones honestas
 
-Frente a Dragonframe, MESORA no hace dos cosas, porque el navegador no tiene acceso a ellas:
+Frente a Dragonframe, MESORA todavía no hace dos cosas. En la versión web el navegador no da acceso a ellas; en la app de escritorio serían posibles, pero aún no están programadas:
 - **Control de cámaras réflex o sin espejo por USB** (disparo y ajustes de Canon, Nikon o Sony). Sí puedes usarlas como cámara web, mediante la función "webcam" del fabricante o una capturadora HDMI.
 - **Control de movimiento** (motores DMX/Arduino) e iluminación DMX.
 
-Los datos se guardan en el almacenamiento del navegador. Exporta tu proyecto en `.mesora` de vez en cuando como copia de seguridad.
+Los proyectos se guardan dentro de la app (o del navegador, en la versión web). Exporta tu proyecto en `.mesora` de vez en cuando como copia de seguridad o para pasarlo a otro equipo: el mismo archivo se abre en Windows, Mac, Android y la web.
 
 ## Estructura
 
@@ -125,11 +138,30 @@ js/projectio.js       archivos .mesora
 js/zip.js             lector/escritor ZIP sin dependencias
 js/timing.js          exposiciones, timecode y espaciado (funciones puras)
 js/grading.js         deflicker y corrección de color (funciones puras)
-sw.js                 modo sin conexión
+js/platform.js        detección de plataforma y guardado nativo en Android
+sw.js                 modo sin conexión (versión web)
+electron/             app de escritorio (Windows, Mac, Linux)
+android/              proyecto Android (Capacitor)
+scripts/              preparación de www/ e iconos
 ```
 
-## Tests
+## Compilar las apps
 
 ```bash
-npm test
+npm install
+npm test                 # tests
+npm run desktop          # abre la app de escritorio en modo desarrollo
+npm run dist:win         # Windows: instalador + portable en dist/
+npm run dist:mac         # Mac: .dmg en dist/ (se compila en un Mac)
+npm run android:apk      # Android: APK firmado en android/app/build/outputs/apk/release/
 ```
+
+Para Android hace falta el Android SDK (`ANDROID_HOME`) y Java 21. El workflow `.github/workflows/build-apps.yml` compila las tres plataformas en GitHub:
+- al subir una etiqueta `v1.2.0` publica una release con esa versión;
+- en cualquier otro push actualiza la pre-release **«última versión»**.
+
+La versión de las apps se toma de `package.json`.
+
+**Firma de Android:** el APK se firma con `android/app/mesora-sideload.keystore`. Esa clave es pública, está en el repositorio y permite que cada versión se instale encima de la anterior. Para publicar en Google Play, usa tu propia clave con las variables `MESORA_KEYSTORE`, `MESORA_KEYSTORE_PASSWORD`, `MESORA_KEY_ALIAS` y `MESORA_KEY_PASSWORD`.
+
+**Firma de Windows y Mac:** sin certificado de pago (Authenticode / Apple Developer ID), Windows y macOS muestran el aviso de seguridad descrito arriba la primera vez. Con un certificado, electron-builder firma automáticamente (`CSC_LINK`, `CSC_KEY_PASSWORD`, y en Mac también `APPLE_ID` para notarizar).
