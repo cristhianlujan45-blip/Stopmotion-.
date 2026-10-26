@@ -173,3 +173,7 @@ La versión de las apps se toma de `package.json`.
 **Firma de Android:** el APK se firma con `android/app/mesora-sideload.keystore`. Esa clave es pública, está en el repositorio y permite que cada versión se instale encima de la anterior. Para publicar en Google Play, usa tu propia clave con las variables `MESORA_KEYSTORE`, `MESORA_KEYSTORE_PASSWORD`, `MESORA_KEY_ALIAS` y `MESORA_KEY_PASSWORD`.
 
 **Firma de Windows y Mac:** sin certificado de pago (Authenticode / Apple Developer ID), Windows y macOS muestran el aviso de seguridad descrito arriba la primera vez. Con un certificado, electron-builder firma automáticamente (`CSC_LINK`, `CSC_KEY_PASSWORD`, y en Mac también `APPLE_ID` para notarizar).
+
+## Código abierto
+
+MESORA Studio es **software libre y gratuito** bajo la licencia [GPL-3.0-or-later](LICENSE). Puedes usarlo para cualquier fin, también comercial, estudiar su código, modificarlo y compartirlo. Si distribuyes una versión modificada, debe seguir siendo libre con la misma licencia.

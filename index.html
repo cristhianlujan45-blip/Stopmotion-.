@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
   <title>MESORA Studio · Animación stop motion</title>
   <meta name="description" content="Estudio de animación stop motion en el navegador: captura, papel cebolla, X-sheet, audio, croma, focus peaking y exportación de video.">
   <meta name="theme-color" content="#0e0f12">
@@ -513,6 +514,10 @@
         <div class="help-top">
           <p class="muted">Rueda del ratón: desplazar la línea de tiempo · <kbd>Ctrl</kbd> + rueda: zoom · arrastra la regla de tiempo para recorrer la animación · arrastra fotogramas para reordenarlos.</p>
           <button class="btn" id="btnShowWelcome">Ver guía de inicio</button>
+        </div>
+        <div class="help-top" id="appInfo" hidden>
+          <p class="muted small" id="appVersion"></p>
+          <button class="btn ghost small-btn" id="btnOpenLog" title="Archivo con los errores y avisos de la app, útil para informar de un problema">Abrir registro de errores</button>
         </div>
       <div class="help-grid">
         <div>

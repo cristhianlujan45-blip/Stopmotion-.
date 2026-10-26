@@ -4,6 +4,11 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('mesoraDesktop', {
   platform: process.platform,
+  app: {
+    info: () => ipcRenderer.invoke('app:info'),
+    checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+    openLog: () => ipcRenderer.invoke('app:openLog'),
+  },
   library: {
     call: (method, ...args) => ipcRenderer.invoke('library', method, ...args),
     root: () => ipcRenderer.invoke('library:root'),

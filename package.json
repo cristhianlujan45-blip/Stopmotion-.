@@ -4,6 +4,7 @@
   "description": "Estudio de animación stop motion para Windows, Mac, Android y web",
   "type": "module",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "start": "node server.js",
     "test": "node --test tests/*.test.js",

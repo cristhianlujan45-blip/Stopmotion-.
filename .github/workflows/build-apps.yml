@@ -34,7 +34,11 @@ jobs:
 
   e2e-desktop:
     needs: test
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,7 +47,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build:web
-      - run: xvfb-run -a npm run test:e2e
+      - name: Desktop end-to-end test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a npm run test:e2e; else npm run test:e2e; fi
 
   windows:
     needs: test

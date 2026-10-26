@@ -20,7 +20,7 @@ async function launch() {
     // require('electron') returns the binary path and downloads it first if needed (Electron 45 has no postinstall).
     executablePath: require('electron'),
     args: [repo, '--no-sandbox', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
-    env: { ...process.env, MESORA_LIBRARY: libDir },
+    env: { ...process.env, MESORA_LIBRARY: libDir, MESORA_TEST: '1' },
   });
   const win = await app.firstWindow();
   const errors = [];

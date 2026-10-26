@@ -4,7 +4,10 @@ const {
 } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const fs = require('node:fs');
 const { Library } = require('./core/library.cjs');
+const { initLog, log, logFile } = require('./core/log.cjs');
+const { checkForUpdate } = require('./core/updates.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'www');
 const START_URL = 'app://mesora/index.html';
@@ -29,7 +32,10 @@ function serveLibrary() {
   ipcMain.handle('library', (event, method, ...args) => {
     if (!fromApp(event)) throw new Error('Origen no permitido');
     if (!LIBRARY_METHODS.has(method)) throw new Error(`Operación no permitida: ${method}`);
-    return library[method](...args);
+    return Promise.resolve(library[method](...args)).catch((err) => {
+      log('error', `library.${method}`, err);
+      throw err;
+    });
   });
   ipcMain.handle('library:root', (event) => {
     if (!fromApp(event)) throw new Error('Origen no permitido');
@@ -134,6 +140,24 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+function serveAppInfo() {
+  let build = {};
+  try { build = JSON.parse(fs.readFileSync(path.join(WEB_ROOT, 'build.json'), 'utf8')); } catch { /* dev run */ }
+  ipcMain.handle('app:info', (event) => {
+    if (!fromApp(event)) throw new Error('Origen no permitido');
+    return { version: app.getVersion(), commit: build.commit || null, date: build.date || null, log: logFile() };
+  });
+  ipcMain.handle('app:checkUpdate', (event) => {
+    if (!fromApp(event)) throw new Error('Origen no permitido');
+    return checkForUpdate({ commit: build.commit || null, fetch: net.fetch.bind(net) });
+  });
+  ipcMain.handle('app:openLog', async (event) => {
+    if (!fromApp(event)) throw new Error('Origen no permitido');
+    const err = await shell.openPath(logFile());
+    if (err) throw new Error(err);
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -163,6 +187,14 @@ function createWindow() {
     if (!url.startsWith('app://')) event.preventDefault();
   });
 
+  const wc = mainWindow.webContents;
+  wc.on('console-message', (event, ...args) => {
+    // Electron passes (level, message, line, source) or, in newer versions, the details on the event.
+    const level = event.level ?? ['verbose', 'info', 'warning', 'error'][args[0]];
+    if (level === 'warning' || level === 'error') log(level, event.message ?? args[1], `${event.sourceId ?? args[3] ?? ''}:${event.lineNumber ?? args[2] ?? ''}`);
+  });
+  wc.on('render-process-gone', (_e, details) => log('error', 'La ventana se cerró inesperadamente', details));
+
   mainWindow.loadURL(START_URL);
 }
 
@@ -172,12 +204,19 @@ app.on('second-instance', () => {
   mainWindow.focus();
 });
 
+initLog(app.getPath('logs'));
+process.on('uncaughtException', (err) => log('error', 'uncaughtException', err));
+process.on('unhandledRejection', (err) => log('error', 'unhandledRejection', err));
+app.on('child-process-gone', (_e, details) => log('error', 'Proceso auxiliar terminado', details));
+
 app.whenReady().then(async () => {
+  log('info', `MESORA ${app.getVersion()} en ${process.platform} ${process.arch}`);
   serveWebApp();
   serveLibrary();
+  serveAppInfo();
   allowCamera();
   buildMenu();
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' && !process.env.MESORA_TEST) {
     await systemPreferences.askForMediaAccess('camera').catch(() => false);
   }
   createWindow();

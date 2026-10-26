@@ -22,6 +22,7 @@ const LS_LAST = 'mesora.lastProject';
 const LS_CAMERA = 'mesora.camera';
 const LS_WELCOMED = 'mesora.welcomed';
 const LS_SECTIONS = 'mesora.sections';
+const LS_UPDATE_CHECK = 'mesora.updateCheck';
 const GRID_CYCLE = ['none', 'thirds', 'quarters', 'fine', 'center'];
 
 function defaultSettings() {
@@ -2270,10 +2271,36 @@ function bindUI() {
   window.addEventListener('pagehide', flush);
 }
 
+// ---------------------------------------------------------------- desktop: version, log, updates
+
+/** Once a day, tells the user when a newer download exists. Never installs anything by itself. */
+async function checkForUpdates() {
+  const last = Number(localStorage.getItem(LS_UPDATE_CHECK) || 0);
+  if (Date.now() - last < 24 * 3600 * 1000) return;
+  localStorage.setItem(LS_UPDATE_CHECK, String(Date.now()));
+  const r = await window.mesoraDesktop.app.checkUpdate().catch(() => null);
+  if (r?.available) {
+    toast('Hay una versión nueva de MESORA Studio. Tus proyectos se conservan al actualizar.', 'info', 15000, [
+      { label: 'Descargar', onClick: () => window.open(r.url) },
+    ]);
+  }
+}
+
+async function showAppInfo() {
+  const api = window.mesoraDesktop?.app;
+  if (!api) return;
+  const info = await api.info().catch(() => null);
+  if (!info) return;
+  $('#appInfo').hidden = false;
+  $('#appVersion').textContent = `MESORA Studio ${info.version}${info.commit ? ` · compilación ${info.commit.slice(0, 7)}` : ''}`;
+  $('#btnOpenLog').onclick = () => api.openLog().catch((err) => toast(err.message, 'error'));
+}
+
 // ---------------------------------------------------------------- init
 
 async function init() {
   bindUI();
+  showAppInfo();
   updateSpacing();
   const prefs = camPrefs();
   if (prefs.resolution) els.camRes.value = prefs.resolution;
@@ -2297,6 +2324,8 @@ async function init() {
   updateCamUI();
   await refreshDevices();
   requestAnimationFrame(loop);
+
+  if (window.mesoraDesktop?.app) setTimeout(checkForUpdates, 15000);
 
   if (!localStorage.getItem(LS_WELCOMED)) {
     localStorage.setItem(LS_WELCOMED, '1');
