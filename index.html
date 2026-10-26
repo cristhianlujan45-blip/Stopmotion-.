@@ -40,6 +40,7 @@
       <span class="brand-name">MESORA</span><span class="brand-sub">Studio</span>
     </div>
     <input id="projectName" class="project-name" spellcheck="false" aria-label="Nombre del proyecto" title="Haz clic para cambiar el nombre del proyecto">
+    <span class="take-label" id="takeLabel" hidden></span>
     <span class="save-state" id="saveState" title="Tu trabajo se guarda automáticamente en este navegador"><svg class="ic"><use href="#i-check"/></svg><span>Guardado</span></span>
     <div class="topbar-actions">
       <button id="btnProjects" class="btn ghost">Proyectos</button>
@@ -307,6 +308,12 @@
             </select>
           </label>
           <p class="muted small" id="projectInfo"></p>
+          <div class="row wrap" id="diskTools" hidden>
+            <button class="btn" id="btnTrash" title="Fotogramas borrados de esta toma. Sus originales siguen en el disco y se pueden restaurar.">Papelera</button>
+            <button class="btn" id="btnHistory" title="Versiones anteriores del timeline de esta toma">Historial</button>
+            <button class="btn" id="btnConform" title="Copia los originales en el orden del timeline, numerados 0001, 0002…, a la carpeta exports de la producción">Conform</button>
+            <button class="btn" id="btnRevealTake" title="Abre la carpeta de esta toma">Abrir carpeta</button>
+          </div>
         </details>
 
         <details class="group" data-sec="audio-y-lip-sync" open>
@@ -423,6 +430,16 @@
           <button class="btn ghost" type="button" id="btnImportProject">Importar .mesora</button>
         </form>
         <ul class="project-list" id="projectList"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modalList" hidden>
+    <div class="modal-card wide">
+      <header><h2 id="modalListTitle"></h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
+      <div class="modal-body">
+        <p class="muted small" id="modalListHint"></p>
+        <ul class="project-list" id="modalListItems"></ul>
       </div>
     </div>
   </div>
@@ -558,7 +575,7 @@
           <li><span class="step-n">3</span><div><b>Guíate con el papel cebolla</b><p>Verás la foto anterior semitransparente sobre la cámara para calcular el siguiente movimiento.</p></div></li>
           <li><span class="step-n">4</span><div><b>Reproduce y exporta</b><p>Pulsa <kbd>Espacio</kbd> para ver tu animación y <b>Exportar</b> para crear el video MP4.</p></div></li>
         </ol>
-        <p class="muted small">Consejos: entre 8 y 12 fotos por segundo de animación es lo habitual. Usa luz artificial constante y cierra las cortinas para evitar parpadeos. Todo se guarda automáticamente en este navegador.</p>
+        <p class="muted small">Consejos: entre 8 y 12 fotos por segundo de animación es lo habitual. Usa luz artificial constante y cierra las cortinas para evitar parpadeos. <span id="welcomeStorage">Todo se guarda automáticamente en este navegador.</span></p>
         <div class="row welcome-actions">
           <button class="btn ghost" id="btnWelcomeHelp">Ver atajos de teclado</button>
           <button class="btn primary" id="btnWelcomeStart">Empezar a animar</button>

@@ -71,7 +71,14 @@ Cada panel explica para qué sirve y las opciones avanzadas están plegadas para
 - **Calculadora de espaciado**: cuántos milímetros mover el objeto en cada fotograma con curvas lineales, ease-in, ease-out y ease-in-out.
 
 **Proyectos y exportación**
-- Varios proyectos guardados automáticamente en el navegador (IndexedDB). Un indicador muestra «Guardado» en todo momento.
+- **App de escritorio:** cada producción es una carpeta en `Documentos/MESORA`, organizada en **Producción › Escena › Toma**. Las fotos originales se guardan como archivos normales (`scenes/sc010/takes/tk01/capture/X1/sc010_tk01_X1_c000001.jpg`) que puedes abrir con cualquier programa. MESORA nunca las sobrescribe ni las borra:
+  - Borrar un fotograma solo lo quita del timeline. Lo recuperas desde **Herramientas › Proyecto › Papelera**.
+  - **Historial** guarda versiones anteriores del timeline.
+  - **Conform** copia los originales en el orden final, numerados 0001, 0002…
+  - Si la app se cierra de golpe justo después de disparar, al volver a abrir la toma la foto aparece al final con una nota.
+  - Los proyectos de versiones anteriores se copian solos a carpetas la primera vez que abres la nueva versión; la copia antigua no se toca.
+- **Navegador y Android:** varios proyectos guardados automáticamente en el navegador (IndexedDB).
+- Un indicador muestra «Guardado» en todo momento.
 - Exportar **video MP4 (H.264) o WebM** con audio a la resolución original, 4K, 1080p, 720p o 480p.
 - Exportar una **secuencia de imágenes en ZIP** con las capturas originales, opcionalmente repitiendo cada fotograma según sus exposiciones.
 - Exportar e importar el proyecto completo como `.mesora` (copia de seguridad o traspaso a otro equipo).

@@ -386,6 +386,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   display: flex; flex-direction: column;
 }
 .project-item.current { border-color: var(--accent); }
+.project-item .path { color: var(--muted); font-size: 11px; letter-spacing: .02em; }
+.take-label { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
 .project-item .thumb { aspect-ratio: 16/9; background: #000 center/cover no-repeat; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .project-item .info { padding: 8px 10px; }
 .project-item .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

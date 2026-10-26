@@ -1,4 +1,4 @@
-import * as db from './db.js';
+import { library } from './library.js';
 import { uid, extForType, typeForName } from './util.js';
 import { createZip, readZip } from './zip.js';
 
@@ -9,13 +9,13 @@ export async function exportProjectFile(project, onProgress) {
   const files = [];
   const ids = [...new Set(project.frames.map((f) => f.id))];
   for (let i = 0; i < ids.length; i++) {
-    const rec = await db.get('frames', ids[i]);
-    if (rec) files.push({ name: `frames/${ids[i]}.${extForType(rec.full.type)}`, data: rec.full });
+    const full = await library.getFrame(project.id, ids[i], 'full').catch(() => null);
+    if (full) files.push({ name: `frames/${ids[i]}.${extForType(full.type)}`, data: full });
     onProgress?.((i + 1) / ids.length / 2);
   }
   for (const blobId of [project.audio?.blobId, project.settings?.chroma?.bgBlobId, project.settings?.reference?.blobId]) {
     if (!blobId) continue;
-    const rec = await db.get('blobs', blobId);
+    const rec = await library.getBlob(project.id, blobId).catch(() => null);
     if (rec) files.push({ name: `blobs/${blobId}__${rec.name || 'archivo'}`, data: rec.blob });
   }
   files.unshift({ name: 'project.json', data: JSON.stringify({ format: FORMAT, version: 1, project }, null, 1) });
@@ -32,19 +32,16 @@ export async function importProjectFile(file, store, onProgress) {
   if (data.format !== FORMAT || !data.project) throw new Error('Formato de proyecto desconocido');
   const src = data.project;
 
-  const project = {
-    ...src,
-    id: uid(),
-    frames: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    settings: {
-      ...(src.settings || {}),
-      chroma: { ...(src.settings?.chroma || {}), bgBlobId: null },
-      reference: { ...(src.settings?.reference || {}), blobId: null },
-    },
-    audio: null,
+  const settings = {
+    ...(src.settings || {}),
+    chroma: { ...(src.settings?.chroma || {}), bgBlobId: null },
+    reference: { ...(src.settings?.reference || {}), blobId: null },
   };
+  const project = await library.createProject({
+    ...src, id: uid(), frames: [], createdAt: Date.now(), updatedAt: Date.now(), settings, audio: null,
+  });
+  project.guides = src.guides || [];
+  project.settings = settings;
 
   const frameEntry = new Map();
   for (const e of entries) {
@@ -70,7 +67,7 @@ export async function importProjectFile(file, store, onProgress) {
     if (!entry) return null;
     const name = entry.name.slice(`blobs/${oldId}__`.length);
     const id = uid();
-    await db.put('blobs', { id, projectId: project.id, name, blob: await entry.blob(typeForName(name)) });
+    await library.putBlob(project.id, { id, name, blob: await entry.blob(typeForName(name)) });
     return id;
   };
   const audioId = await copyBlob(src.audio?.blobId);
@@ -80,6 +77,6 @@ export async function importProjectFile(file, store, onProgress) {
   const refId = await copyBlob(src.settings?.reference?.blobId);
   if (refId) project.settings.reference.blobId = refId;
 
-  await db.put('projects', project);
+  await library.saveProject(project);
   return project;
 }

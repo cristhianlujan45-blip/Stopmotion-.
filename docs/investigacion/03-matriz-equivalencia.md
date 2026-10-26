@@ -1,6 +1,6 @@
 # Etapa 3 · Matriz de equivalencia Dragonframe ↔ MESORA
 
-Fecha: 26-10-2026 · Versión de MESORA evaluada: 1.0.0 (commit `469082b`).
+Fecha: 26-10-2026 · Versión de MESORA evaluada: 1.0.0 + etapa 6 (motor principal).
 
 ## Cómo leer la matriz
 
@@ -20,7 +20,7 @@ Una función puede tener dos estados, por ejemplo «Parcial + Requiere SDK».
 
 **Fuentes de la columna Dragonframe:** referencias de `02-investigacion-tecnica.md` (S1 = manual DF4, S2 = página de funciones, S3 = historial de versiones…).
 
-> Hasta la inspección directa, ninguna fila de Dragonframe es **[OBS]**. Ninguna función de MESORA figura como «Probada y verificada» porque aún no existe el registro de pruebas de aceptación. Las 13 pruebas unitarias actuales cubren cálculos auxiliares, no funciones completas.
+> Hasta la inspección directa, ninguna fila de Dragonframe es **[OBS]**. «Probada y verificada» solo se usa cuando la prueba de aceptación se ha ejecutado y está registrada en `docs/pruebas/`.
 
 ---
 
@@ -28,18 +28,20 @@ Una función puede tener dos estados, por ejemplo «Parcial + Requiere SDK».
 
 | # | Función | Cómo funciona en Dragonframe | MESORA hoy | Estado | Cómo se implementará | Tecnología / dependencias | Prueba de aceptación |
 |---|---|---|---|---|---|---|---|
-| 1.1 | Producción › escena › toma | Escena = carpeta + `.dgn`; tomas dentro [S1 p. 9, 149] | Proyectos planos, sin escenas ni tomas | No iniciada | Modelo propio: Producción › Escena › Toma › Exposición | Proceso principal de Electron, `fs` | Crear producción con 2 escenas × 2 tomas; reabrir; estructura idéntica en disco |
-| 1.2 | Originales como archivos accesibles | Carpetas de exposición `X1…Xn` con nombres legibles [S1 p. 335] | Blobs en IndexedDB | No iniciada | Archivos inmutables en la carpeta del proyecto | `fs`, escritura atómica | Los archivos se abren en un visor externo; sus hashes coinciden con lo que entregó la cámara |
-| 1.3 | Edición virtual + conform | Las ediciones no tocan los archivos; *conform* renumera [S1 p. 335] | Orden de fotogramas en un objeto JSON (en IndexedDB) | Parcial | Lista de edición (EDL) versionada; conform = copia renumerada | JSON con journal | Editar 100 operaciones: 0 archivos originales modificados (hash) |
-| 1.4 | Papelera de fotogramas | Carpeta `_backup` con lo borrado; restaurar [S1 p. 133, 335] | Deshacer en memoria | Parcial | Borrar = mover a `trash/` + entrada en EDL; restaurar | `fs.rename` | Borrar, cerrar la app, reabrir y restaurar: fotograma idéntico |
-| 1.5 | Guardado automático | Continuo [DED] | Sí (IndexedDB, indicador «Guardado») | Parcial | Journal de operaciones + snapshot periódico en disco | `fs` + fsync | Matar el proceso tras cada tipo de operación: al reabrir no se pierde nada confirmado |
-| 1.6 | Recuperación ante fallos | [DESC] | No | No iniciada | Repetir el journal al arrancar; detectar capturas huérfanas | — | Corte durante la descarga de un RAW: el archivo parcial se detecta y no corrompe la toma |
-| 1.7 | Duplicar escena | Sí [S1 p. 152] | Duplicar proyecto: no | No iniciada | Copia de ajustes y EDL; los originales por *hardlink* o copia | `fs.link`/`copyFile` | Duplicar: los cambios en la copia no afectan al original |
-| 1.8 | Plantillas e importar ajustes de escena | Sí [S1 p. 156–157] | No | No iniciada | Plantilla = JSON de ajustes | — | Nueva escena desde plantilla con cámara, fps y guías iguales |
-| 1.9 | Importar imágenes | Importar secuencia (DF3.6) [S1 p. 154] | Sí (arrastrar) | Parcial | Copia a la toma, conservando los bytes originales | — | Importar 500 JPEG/PNG/TIFF: orden y bytes correctos |
-| 1.10 | Exportar/importar proyecto completo | Carpetas directas | `.mesora` (zip) | Parcial | El proyecto *es* una carpeta; exportación empaquetada opcional | — | Ida y vuelta entre dos equipos sin pérdida |
+| 1.1 | Producción › escena › toma | Escena = carpeta + `.dgn`; tomas dentro [S1 p. 9, 149] | **Escritorio:** carpetas en `Documentos/MESORA` (etapa 6). Web/Android: proyectos planos | Probada y verificada | Implementado en `electron/core/library.cjs` | Proceso principal de Electron, `fs` | Pasa: estructura en disco, reabrir y crear nuevas tomas y escenas (pruebas: `tests/library.test.js`, `tests/e2e/desktop.e2e.cjs`) |
+| 1.2 | Originales como archivos accesibles | Carpetas de exposición `X1…Xn` con nombres legibles [S1 p. 335] | `capture/X1/sc010_tk01_X1_c000001.jpg`, inmutables | Probada y verificada | Escritura `.partial` + `fsync` + `link()` sin sobrescribir | `fs` | Pasa: hash idéntico al recibido; nunca se sobrescribe; numeración continua tras reabrir |
+| 1.3 | Edición virtual + conform | Las ediciones no tocan los archivos; *conform* renumera [S1 p. 335] | `edl.json` + conform a `exports/` | Probada y verificada | Lista de edición virtual; conform = copia renumerada con holds | JSON atómico | Pasa: conform en orden con holds; hashes de los originales sin cambios |
+| 1.4 | Papelera de fotogramas | Carpeta `_backup` con lo borrado; restaurar [S1 p. 133, 335] | Papelera virtual (capturas fuera del timeline) + botón «Papelera» | Probada y verificada | Borrar = quitar del timeline; el original no se mueve | — | Pasa: borrar, cerrar, reabrir y restaurar (núcleo y E2E) |
+| 1.5 | Guardado automático | Continuo [DED] | Escritorio: a disco 400 ms después de cada cambio; web: IndexedDB | Probada y verificada | JSON atómico por nivel (producción, escena, toma) | `fs` + fsync | Pasa: el disco refleja capturas, borrados y restauraciones (E2E) |
+| 1.6 | Recuperación ante fallos | [DESC] | Capturas huérfanas → al final con nota; `.partial` informados y conservados; originales que faltan, avisados | Probada y verificada | Lista `known` + reconciliación al abrir | — | Pasa: 80 rondas de `SIGKILL` en mitad de capturas y guardados, 0 capturas confirmadas perdidas o duplicadas |
+| 1.7 | Duplicar escena | Sí [S1 p. 152] | «Duplicar escena», «Nueva toma», «Nueva escena» en Proyectos | Implementada | Copia completa (originales con `COPYFILE_EXCL`/clonado CoW) | `fs.copyFile` | Núcleo probado (la copia es independiente); los botones de la interfaz aún no tienen prueba E2E |
+| 1.8 | Plantillas e importar ajustes de escena | Sí [S1 p. 156–157] | Una escena nueva copia los ajustes de otra; las tomas comparten los de su escena | Parcial | Faltan plantillas guardadas con nombre | — | Nueva escena desde plantilla con cámara, fps y guías iguales |
+| 1.9 | Importar imágenes | Importar secuencia (DF3.6) [S1 p. 154] | Sí (arrastrar); en escritorio se guardan los bytes originales | Implementada | Copia a la toma conservando los bytes | — | Importar 500 JPEG/PNG/TIFF: orden y bytes correctos (prueba pendiente) |
+| 1.10 | Exportar/importar proyecto completo | Carpetas directas | La producción *es* una carpeta; `.mesora` sigue funcionando a través de la nueva capa | Implementada | — | — | Ida y vuelta entre dos equipos sin pérdida (prueba pendiente) |
 | 1.11 | Notas de escena (Notepad) | Notepad y notas por fotograma (DF4.1) [S1 p. 209] | Notas por fotograma | Parcial | Notas de escena y por fotograma en el modelo | — | Las notas aparecen en el X-Sheet y en la exportación CSV |
 | 1.12 | Frame Tags | Etiquetas de fotograma (DF5.2); reproducir y exportar por tags (2025.09/2026.01) [S3] | No | No iniciada | Etiquetas en la EDL | — | Reproducir y exportar solo los fotogramas etiquetados |
+| 1.13 | Historial del timeline | [DESC] | Versión antes de cada borrado + una por minuto; botón «Historial» | Probada y verificada | `history/edl-*.json` (máx. 50) | — | Pasa: restaurar una versión anterior (núcleo y E2E) |
+| 1.14 | Migración desde la versión anterior | — | Proyectos de IndexedDB → carpetas al arrancar la app de escritorio | Probada y verificada | Copia completa; marcada solo al terminar; sin tocar el original | — | Pasa: orden, holds, notas y audio conservados; no se repite (E2E) |
 
 ## 2. Cámara y captura
 
@@ -190,12 +192,12 @@ Recuento automático de las filas de esta matriz:
 
 | Estado | Funciones |
 |---|---|
-| Probada y verificada | 0 |
-| Implementada | 0 |
-| Parcialmente implementada | 52 |
-| No iniciada | 49 |
+| Probada y verificada | 8 |
+| Implementada | 3 |
+| Parcialmente implementada | 48 |
+| No iniciada | 44 |
 | Requiere SDK externo (cámaras de marca, filas 2.3–2.6) | 4 |
 | Requiere hardware (filas 6.1, 7.1, 7.9) | 3 |
-| **Total** | **108** |
+| **Total** | **110** |
 
 Las 7 filas que requieren SDK o hardware tampoco están iniciadas.

@@ -13,6 +13,7 @@ export function debounce(fn, ms) {
     t = setTimeout(() => fn(...args), ms);
   };
   wrapped.flush = (...args) => { clearTimeout(t); fn(...args); };
+  wrapped.cancel = () => clearTimeout(t);
   return wrapped;
 }
 

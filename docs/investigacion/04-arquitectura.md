@@ -1,6 +1,6 @@
 # Etapa 4 · Diseño de arquitectura
 
-Fecha: 26-10-2026 · Estado: **propuesta pendiente de aprobación** (ver §9).
+Fecha: 26-10-2026 · Estado: **aprobada la opción C (evolucionar MESORA con Electron)** el 26-10-2026. Etapa 6 completada (ver §6).
 
 ## 1. Requisitos que determinan la arquitectura
 
@@ -93,35 +93,40 @@ interface CameraAdapter {
 
 Una **batería de pruebas de contrato** común (abrir, live view, captura, desconexión) la deben pasar todos los adaptadores. El simulador la pasa en CI. Los adaptadores reales la pasan en un banco con la cámara, y el resultado se registra en `docs/pruebas/`.
 
-### 3.3 Datos en disco (diseño propio)
+### 3.3 Datos en disco (diseño propio) · **implementado en la etapa 6**
 
 ```
-MiCorto.mesora/                        ← producción (una carpeta: se ve en el Explorador)
-  production.json                      ← nombre, fps, resolución, personajes, perfiles
-  journal/000001.jsonl                 ← diario de operaciones (append-only, fsync)
-  scenes/
-    sc010/scene.json                   ← ajustes, plantilla, longitud, notas
-      takes/
-        tk01/
-          edl.json                     ← lista de edición VIRTUAL (orden, holds, tags, notas por fotograma)
-          capture/X1/sc010_tk01_X1_c000001.CR3   ← ORIGINALES, inmutables, numerados por orden de CAPTURA
-          capture/X1/sc010_tk01_X1_c000001.JPG
-          assist/sc010_tk01_a000001.jpg          ← video assist emparejado
-          proxy/…                                ← vistas previas para reproducción (regenerables)
-          trash/                                 ← lo «borrado» (se recupera; solo se vacía a mano)
-  audio/  references/  characters/<nombre>/faces/  lighting/  motion/  exports/
+Documentos/MESORA/                     ← biblioteca (variable MESORA_LIBRARY para pruebas)
+  Mi corto/                            ← producción: una carpeta normal, visible en el Explorador
+    production.json                    ← id, nombre, fps por defecto, resolución
+    media/<id>__<nombre>               ← audio, referencias y fondos de croma (nunca se borran)
+    exports/conform_sc010_tk01_<fecha>/  ← copias renumeradas 0001, 0002…
+    scenes/
+      sc010/scene.json                 ← nombre, fps, ajustes del visor, audio (compartidos por sus tomas)
+        takes/
+          tk01/
+            edl.json                   ← timeline VIRTUAL: orden, holds, notas, guías + lista «known»
+            capture/X1/sc010_tk01_X1_c000001.jpg   ← ORIGINALES: inmutables, numerados por orden de captura
+            proxy/c000001.preview.jpg|.thumb.jpg|.json  ← vistas previas y metadatos (regenerables)
+            history/edl-<fecha>.json   ← versiones anteriores del timeline (máx. 50)
 ```
 
-- **Los originales nunca se renombran ni se sobrescriben.** El orden final vive en `edl.json`. El **conform** produce una copia renumerada en `exports/`.
-- **Escritura segura:**
-  1. Se escribe en `*.partial` dentro del mismo directorio.
-  2. Se hace `fsync` y luego `rename`.
-  3. Se anota en el journal.
-  4. La EDL se actualiza.
-
-  Al arrancar se repite el journal desde el último snapshot y se listan los `*.partial` y los archivos sin entrada como **huérfanos recuperables**; nunca se borran automáticamente.
-- **¿Por qué JSON + journal y no SQLite como primera opción?** Es legible, se puede inspeccionar con cualquier editor, no necesita módulo nativo y su tamaño encaja con el volumen de datos: una toma de 10.000 fotogramas ocupa ≈ 1–2 MB de EDL [DED]. Se reserva SQLite para un catálogo global de producción (búsqueda e IA) si más adelante hace falta.
-- **Migración:** un importador convierte los proyectos actuales (IndexedDB y `.mesora`) a este formato. Los proyectos antiguos no se tocan.
+- **Los originales nunca se renombran, mueven, sobrescriben ni borran desde la app.**
+  - Se escriben en un `.partial`, se hace `fsync` y se crean con `link()`, que falla si el destino ya existe. En discos sin enlaces duros (FAT o exFAT) se comprueba la existencia y después se hace `rename`.
+  - El número de captura no se reutiliza nunca.
+- **Edición virtual:** el orden final vive en `edl.json`. Borrar un fotograma solo lo quita del timeline. La **papelera** es la lista de capturas de la toma que no están en el timeline, y desde ella se restauran.
+- **Conform:** copia los originales en el orden del timeline (repitiendo los holds) a `exports/`, sin tocar los originales.
+- **Escritura segura de JSON:** temporal + `fsync` + `rename` + `fsync` del directorio. Un corte deja la versión anterior o la nueva, nunca una mezcla.
+- **Recuperación ante fallos.** Sustituye al diario de operaciones previsto, porque cubre el mismo riesgo con menos piezas:
+  - `edl.json` guarda la lista `known` de capturas registradas.
+  - Al abrir una toma, cualquier captura del disco que no esté en `known` es la de un cierre inesperado justo después de disparar. Se añade **al final del timeline con una nota** y se informa al usuario.
+  - Los `.partial` se listan y **no se borran**.
+  - Los originales que faltan, por ejemplo porque se movieron fuera de la app, se avisan.
+- **Historial:** se guarda una versión del timeline **antes de cada cambio que quita fotogramas** y, además, una por minuto. Restaurar guarda primero la versión actual.
+- **Borrar una toma** = su carpeta va a la **papelera del sistema** (`shell.trashItem`), desde donde se puede recuperar.
+- **Versiones:** cada JSON lleva `version`. Una producción de una versión futura no se abre, para no estropearla.
+- **Migración:** al arrancar la app de escritorio, los proyectos guardados en IndexedDB se copian a producciones en disco. No se tocan los originales y cada proyecto solo se marca como migrado cuando terminó entero.
+- **Web y Android** siguen con IndexedDB a través de la misma interfaz (`js/library.js`).
 
 ### 3.4 Disparo coordinado (orden por fotograma)
 
@@ -160,7 +165,7 @@ Android (Capacitor) se mantiene con el código de interfaz común y almacenamien
 
 | Etapa | Entrega comprobable | Criterio de salida |
 |---|---|---|
-| 6 · Motor principal | Proyectos en disco (producción › escena › toma), journal, papelera, conform, migración desde IndexedDB | Prueba de no pérdida + migración de un proyecto actual |
+| 6 · Motor principal ✅ | Proyectos en disco (producción › escena › toma), escritura segura, recuperación, papelera, historial, conform, migración desde IndexedDB | Cumplido: prueba de no pérdida y migración verificadas (ver `docs/pruebas/etapa-6-motor-principal.md`) |
 | 7 · Cámara | `camera-host`, adaptadores `uvc`, `folder-watch` y `simulator`; video assist + HQ emparejados; adaptador `canon-edsdk` **en cuanto haya SDK** | Contrato de adaptador; captura real con carpeta vigilada |
 | 8 · Animación | Visor WebGL2 (onion bidireccional, modos de mezcla, guías vectoriales, capas de referencia) | Pruebas de píxel del visor |
 | 9 · Timeline y X-Sheet | Insertar/sobrescribir, hold, portapapeles, entrada y salida, tags, X-Sheet con columnas y CSV | Las dos vistas sincronizadas; CSV de ida y vuelta |
@@ -190,7 +195,7 @@ Android (Capacitor) se mantiene con el código de interfaz común y almacenamien
 
 ## 9. Decisiones que necesita tomar el usuario
 
-1. **Arquitectura:** C (evolucionar MESORA, recomendada) o A (reescritura en C++/Qt).
+1. ~~**Arquitectura**~~ → **decidido: C (evolucionar MESORA con Electron).**
 2. **Licencia de MESORA** (el repo no tiene ninguna):
    - Compatible con la GPL: permite usar libx264 para H.264.
    - Propietaria o permisiva: H.264 mediante el codificador del sistema operativo o el de Chromium.
