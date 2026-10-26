@@ -71,7 +71,7 @@ export async function renderVideo({
 
   // Decode ahead (already scaled to the output size) so drawing never waits on the disk.
   const decodeFrame = async (idx) => {
-    const rec = await store.getRecord(frames[idx].id);
+    const rec = await store.original(frames[idx].id);
     if (!rec) return null;
     const f = fitContain(rec.w, rec.h, width, height);
     return createImageBitmap(rec.full, {
@@ -158,7 +158,7 @@ export async function buildImageSequence({ frames, store, expand = true, baseNam
     const idx = indices[n];
     let data = cache.get(idx);
     if (!data) {
-      const rec = await store.getRecord(frames[idx].id);
+      const rec = await store.original(frames[idx].id);
       const filter = filters?.[idx] || 'none';
       data = filter === 'none' ? rec.full : await applyFilter(rec.full, filter);
       cache.clear();

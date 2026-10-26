@@ -1,5 +1,5 @@
-import * as db from './db.js';
-import { uid, makeCanvas, canvasToBlob } from './util.js';
+import { library } from './library.js';
+import { makeCanvas, canvasToBlob } from './util.js';
 import { meanLuma } from './grading.js';
 
 export const PREVIEW_MAX = 1280;
@@ -11,6 +11,7 @@ export const THUMB_H = 72;
  */
 export class FrameStore {
   constructor({ maxCache = 72, onLoad = () => {} } = {}) {
+    this.projectId = null;
     this.cache = new Map();
     this.pending = new Map();
     this.thumbUrls = new Map();
@@ -37,7 +38,6 @@ export class FrameStore {
   }
 
   async _add(projectId, source, w, h, full) {
-    const id = uid();
     const pw = Math.min(PREVIEW_MAX, w);
     const ph = Math.round((h * pw) / w);
     const pc = makeCanvas(pw, ph);
@@ -56,7 +56,7 @@ export class FrameStore {
       canvasToBlob(tc, 'image/jpeg', 0.78),
       createImageBitmap(pc),
     ]);
-    await db.put('frames', { id, projectId, full, preview, thumb, w, h, luma, created: Date.now() });
+    const id = await library.addFrame(projectId, { full, preview, thumb, w, h, luma });
     this.lumas.set(id, luma);
     this._set(`${id}:preview`, bitmap);
     return { id, w, h };
@@ -81,9 +81,9 @@ export class FrameStore {
     if (this.pending.has(key)) return this.pending.get(key);
     const p = (async () => {
       try {
-        const rec = await db.get('frames', id);
-        if (!rec?.[kind]) return null;
-        const bmp = await createImageBitmap(rec[kind]);
+        const blob = await library.getFrame(this.projectId, id, kind);
+        if (!blob) return null;
+        const bmp = await createImageBitmap(blob);
         this._set(key, bmp);
         this.onLoad(id, kind);
         return bmp;
@@ -100,39 +100,51 @@ export class FrameStore {
 
   /** Decodes an image without caching it (caller must close it). */
   async decode(id, kind = 'full', options) {
-    const rec = await db.get('frames', id);
-    if (!rec) return null;
-    return options ? createImageBitmap(rec[kind], options) : createImageBitmap(rec[kind]);
+    const blob = await library.getFrame(this.projectId, id, kind);
+    if (!blob) return null;
+    return options ? createImageBitmap(blob, options) : createImageBitmap(blob);
   }
 
   /** Mean brightness of a frame (measured on its thumbnail). */
   async luma(id) {
     if (this.lumas.has(id)) return this.lumas.get(id);
-    const rec = await db.get('frames', id);
-    if (!rec) return 0;
-    let luma = rec.luma;
+    const meta = await library.getFrameMeta(this.projectId, id);
+    if (!meta) return 0;
+    let luma = meta.luma;
     if (luma == null) {
-      const bmp = await createImageBitmap(rec.thumb);
+      const bmp = await createImageBitmap(await library.getFrame(this.projectId, id, 'thumb'));
       const c = makeCanvas(bmp.width, bmp.height);
       const ctx = c.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(bmp, 0, 0);
       bmp.close?.();
       luma = meanLuma(ctx.getImageData(0, 0, c.width, c.height).data);
-      db.put('frames', { ...rec, luma }).catch(() => {});
+      library.setFrameMeta(this.projectId, id, { luma }).catch(() => {});
     }
     this.lumas.set(id, luma);
     return luma;
   }
 
-  getRecord(id) {
-    return db.get('frames', id);
+  /** Original image of a frame and its size, for export. */
+  async original(id) {
+    const [full, meta] = await Promise.all([
+      library.getFrame(this.projectId, id, 'full'),
+      library.getFrameMeta(this.projectId, id),
+    ]);
+    if (!full) return null;
+    let { w, h } = meta || {};
+    if (!w || !h) {
+      const bmp = await createImageBitmap(full);
+      ({ width: w, height: h } = bmp);
+      bmp.close?.();
+    }
+    return { full, w, h };
   }
 
   async thumbUrl(id) {
     if (this.thumbUrls.has(id)) return this.thumbUrls.get(id);
-    const rec = await db.get('frames', id);
-    if (!rec) return '';
-    const url = URL.createObjectURL(rec.thumb);
+    const blob = await library.getFrame(this.projectId, id, 'thumb').catch(() => null);
+    if (!blob) return '';
+    const url = URL.createObjectURL(blob);
     this.thumbUrls.set(id, url);
     return url;
   }
@@ -160,7 +172,10 @@ export class FrameStore {
     this.thumbUrls.delete(id);
   }
 
-  clear() {
+  /** Empties the caches and points the store at another project. */
+  clear(projectId = null) {
+    this.projectId = projectId;
+    this.lumas.clear();
     for (const b of this.cache.values()) b.close?.();
     this.cache.clear();
     for (const url of this.thumbUrls.values()) URL.revokeObjectURL(url);
@@ -169,11 +184,8 @@ export class FrameStore {
 
   /** Deletes stored frames of a project that are no longer referenced. */
   async collectGarbage(projectId, keepIds) {
-    const keep = new Set(keepIds);
-    const keys = await db.keysByIndex('frames', 'projectId', projectId);
-    const orphans = keys.filter((k) => !keep.has(k));
+    const orphans = await library.collectGarbage(projectId, keepIds);
     orphans.forEach((id) => this.forget(id));
-    await db.del('frames', orphans);
     return orphans.length;
   }
 }

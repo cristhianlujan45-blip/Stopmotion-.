@@ -1,8 +1,10 @@
 name: Apps (Windows, Mac, Android)
 
-# Builds the desktop apps and the Android APK on every push and publishes them:
+# Builds the desktop apps and the Android APK on every push. Publishing:
 # - pushing a tag like v1.2.0 creates a versioned release;
-# - any other push updates the "ultima-version" pre-release.
+# - a push to the default branch updates the "ultima-version" pre-release;
+# - pushes to other branches only keep the installers as run artifacts, so
+#   work in progress never replaces the public download.
 on:
   push:
     branches: ['**']
@@ -29,6 +31,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  e2e-desktop:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:web
+      - run: xvfb-run -a npm run test:e2e
 
   windows:
     needs: test
@@ -98,6 +113,7 @@ jobs:
 
   release:
     needs: [windows, mac, android]
+    if: github.ref_type == 'tag' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

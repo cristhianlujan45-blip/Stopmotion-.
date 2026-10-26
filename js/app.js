@@ -2,7 +2,8 @@ import {
   $, $$, uid, debounce, clamp, sleep, toast, safeFileName, makeCanvas,
   canvasToBlob, getPath, setPath, withDefaults, formatDate, isTypingTarget,
 } from './util.js';
-import * as db from './db.js';
+import { library } from './library.js';
+import { pendingBrowserProjects, migrateProject } from './migrate.js';
 import { Camera } from './camera.js';
 import { FrameStore } from './framestore.js';
 import { History } from './history.js';
@@ -81,6 +82,7 @@ const els = {
   hudFlags: $('#hudFlags'),
   dropHint: $('#dropHint'),
   projectName: $('#projectName'),
+  takeLabel: $('#takeLabel'),
   saveState: $('#saveState'),
   hudNote: $('#hudNote'),
   frameNote: $('#frameNote'),
@@ -170,7 +172,7 @@ function saveNow() {
   p.updatedAt = Date.now();
   state.saving = true;
   updateSaveState();
-  return db.put('projects', p)
+  return library.saveProject(p)
     .then(() => { state.saving = false; updateSaveState(); })
     .catch((err) => {
       state.saving = false;
@@ -192,11 +194,11 @@ function updateSaveState(error) {
   else label.textContent = 'Guardado';
 }
 
-async function openProject(p) {
+async function openProject(p, report = null) {
   stopPlayback(false);
   stopTimelapse();
   if (P()) saveSoon.flush();
-  store.clear();
+  store.clear(p.id);
   history.clear();
   p.settings = withDefaults(p.settings, defaultSettings());
   p.guides ??= [];
@@ -209,6 +211,7 @@ async function openProject(p) {
   localStorage.setItem(LS_LAST, p.id);
 
   els.projectName.value = p.name;
+  updateTakeLabel();
   setFpsUI(p.fps);
   if (!p.frames.length && camera.active) { p.width = camera.width; p.height = camera.height; }
   viewer.setSize(p.width, p.height);
@@ -221,6 +224,26 @@ async function openProject(p) {
   refresh();
   updateProjectInfo();
   store.collectGarbage(p.id, p.frames.map((f) => f.id)).catch(() => {});
+  showRecoveryReport(report);
+}
+
+function updateTakeLabel() {
+  const p = P();
+  els.takeLabel.hidden = !p.scene;
+  if (p.scene) els.takeLabel.textContent = `${p.scene.name} · ${p.take.name}`;
+}
+
+/** Tells the user what crash recovery found when a take was opened. */
+function showRecoveryReport(report) {
+  if (!report) return;
+  if (report.recovered.length) {
+    const n = report.recovered.length;
+    toast(`Se recuperaron ${n} ${n === 1 ? 'captura que no llegó' : 'capturas que no llegaron'} a guardarse en el timeline. Están al final, con una nota.`, 'warn', 9000);
+  }
+  if (report.missing.length) {
+    toast(`Faltan en el disco ${report.missing.length} archivos originales de esta toma. ¿Se movieron o borraron fuera de MESORA?`, 'error', 9000);
+  }
+  if (report.partials.length) console.warn('Archivos de escrituras interrumpidas (no se han borrado):', report.partials);
 }
 
 function setProjectSize(w, h) {
@@ -580,7 +603,12 @@ function deleteSelected() {
     state.selection = next < P().frames.length ? new Set([P().frames[next].key]) : new Set();
     state.anchor = next;
   });
-  toast(idx.length === 1 ? 'Fotograma eliminado' : `${idx.length} fotogramas eliminados`);
+  const disk = library.kind === 'disk';
+  const msg = idx.length === 1 ? 'Fotograma eliminado.' : `${idx.length} fotogramas eliminados.`;
+  toast(disk ? `${msg} La foto original sigue guardada.` : msg, 'info', 6000, [
+    { label: 'Deshacer', onClick: undo },
+    ...(disk ? [{ label: 'Ver papelera', onClick: () => openTrash().catch((err) => toast(err.message, 'error')) }] : []),
+  ]);
 }
 
 function duplicateSelected() {
@@ -1163,7 +1191,7 @@ async function restoreAudio() {
   const a = P().audio;
   if (a?.blobId) {
     try {
-      const rec = await db.get('blobs', a.blobId);
+      const rec = await library.getBlob(P().id, a.blobId);
       if (rec) await audio.load(rec.blob);
     } catch (err) {
       toast(`No se pudo cargar el audio: ${err.message}`, 'error');
@@ -1182,8 +1210,8 @@ async function loadAudioFile(file) {
     return;
   }
   const id = uid();
-  await db.put('blobs', { id, projectId: project.id, name: file.name, blob: file });
-  if (project.audio?.blobId) db.del('blobs', project.audio.blobId).catch(() => {});
+  await library.putBlob(project.id, { id, name: file.name, blob: file });
+  if (project.audio?.blobId) library.deleteBlob(P().id, project.audio.blobId).catch(() => {});
   project.audio = { blobId: id, name: file.name, offset: 0 };
   saveSoon();
   updateAudioUI();
@@ -1193,7 +1221,7 @@ async function loadAudioFile(file) {
 
 function clearAudio() {
   const p = P();
-  if (p.audio?.blobId) db.del('blobs', p.audio.blobId).catch(() => {});
+  if (p.audio?.blobId) library.deleteBlob(P().id, p.audio.blobId).catch(() => {});
   p.audio = null;
   audio.clear();
   saveSoon();
@@ -1218,7 +1246,7 @@ async function restoreChromaBg() {
   state.chromaBg = null;
   const id = S().chroma.bgBlobId;
   if (!id) return;
-  const rec = await db.get('blobs', id).catch(() => null);
+  const rec = await library.getBlob(P().id, id).catch(() => null);
   if (rec) state.chromaBg = await createImageBitmap(rec.blob).catch(() => null);
   state.dirty = true;
 }
@@ -1228,9 +1256,9 @@ async function setChromaBg(file) {
   const bmp = await createImageBitmap(file).catch(() => null);
   if (!bmp) { toast('No se pudo leer la imagen', 'error'); return; }
   const id = uid();
-  await db.put('blobs', { id, projectId: project.id, name: file.name, blob: file });
+  await library.putBlob(project.id, { id, name: file.name, blob: file });
   const old = S().chroma.bgBlobId;
-  if (old) db.del('blobs', old).catch(() => {});
+  if (old) library.deleteBlob(P().id, old).catch(() => {});
   S().chroma.bgBlobId = id;
   state.chromaBg?.close?.();
   state.chromaBg = bmp;
@@ -1241,7 +1269,7 @@ async function setChromaBg(file) {
 
 function clearChromaBg() {
   const old = S().chroma.bgBlobId;
-  if (old) db.del('blobs', old).catch(() => {});
+  if (old) library.deleteBlob(P().id, old).catch(() => {});
   S().chroma.bgBlobId = null;
   state.chromaBg?.close?.();
   state.chromaBg = null;
@@ -1284,7 +1312,7 @@ async function restoreReference() {
   releaseReference();
   const id = S().reference.blobId;
   if (id) {
-    const rec = await db.get('blobs', id).catch(() => null);
+    const rec = await library.getBlob(P().id, id).catch(() => null);
     if (rec) await openReference(rec.blob).catch(() => {});
   }
   updateReferenceUI();
@@ -1299,9 +1327,9 @@ async function setReference(file) {
     return;
   }
   const id = uid();
-  await db.put('blobs', { id, projectId: project.id, name: file.name, blob: file });
+  await library.putBlob(project.id, { id, name: file.name, blob: file });
   const r = S().reference;
-  if (r.blobId) db.del('blobs', r.blobId).catch(() => {});
+  if (r.blobId) library.deleteBlob(P().id, r.blobId).catch(() => {});
   Object.assign(r, { blobId: id, name: file.name, visible: true });
   applySettingsToUI();
   saveSoon();
@@ -1311,7 +1339,7 @@ async function setReference(file) {
 
 function clearReference() {
   const r = S().reference;
-  if (r.blobId) db.del('blobs', r.blobId).catch(() => {});
+  if (r.blobId) library.deleteBlob(P().id, r.blobId).catch(() => {});
   Object.assign(r, { blobId: null, name: '' });
   releaseReference();
   saveSoon();
@@ -1464,18 +1492,19 @@ function closeModal(modal) {
 }
 
 async function renderProjectList() {
-  const list = (await db.getAll('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
+  const list = await library.listProjects();
+  const disk = library.kind === 'disk';
+  if (disk) return renderProductionList(list);
   const ul = $('#projectList');
   ul.innerHTML = '';
   for (const p of list) {
     const li = document.createElement('li');
     li.className = `project-item${p.id === P().id ? ' current' : ''}`;
-    const total = totalExposures(p.frames || []);
     li.innerHTML = `
-      <div class="thumb">${p.frames?.length ? '' : 'Sin fotogramas'}</div>
+      <div class="thumb">${p.frameCount ? '' : 'Sin fotogramas'}</div>
       <div class="info">
         <div class="name"></div>
-        <div class="sub">${p.frames?.length || 0} fotogramas · ${formatTime(total, p.fps)} · ${p.fps} fps</div>
+        <div class="sub">${p.frameCount} fotogramas · ${formatTime(p.exposures, p.fps)} · ${p.fps} fps</div>
         <div class="sub">${formatDate(p.updatedAt)}</div>
       </div>
       <div class="actions">
@@ -1485,56 +1514,284 @@ async function renderProjectList() {
         <button class="btn ghost danger" data-act="delete">Eliminar</button>
       </div>`;
     li.querySelector('.name').textContent = p.name;
-    if (p.frames?.length) {
-      db.get('frames', p.frames[0].id).then((rec) => {
-        if (!rec) return;
-        const url = URL.createObjectURL(rec.preview);
+    if (p.firstFrameId) {
+      library.getFrame(p.id, p.firstFrameId, 'preview').then((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
         modalUrls.push(url);
         li.querySelector('.thumb').style.backgroundImage = `url("${url}")`;
-      });
+      }).catch(() => {});
     }
     li.querySelector('.thumb').addEventListener('click', () => switchProject(p.id));
-    li.querySelector('.actions').addEventListener('click', async (e) => {
+    li.querySelector('.actions').addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
-      if (act === 'open') switchProject(p.id);
-      else if (act === 'rename') {
-        const name = await askText('Renombrar proyecto', p.name);
-        if (!name?.trim()) return;
-        if (p.id === P().id) { P().name = name.trim(); els.projectName.value = P().name; await saveNow(); }
-        else { p.name = name.trim(); await db.put('projects', p); }
-        renderProjectList();
-      } else if (act === 'export') {
-        await exportProject(p.id === P().id ? P() : p);
-      } else if (act === 'delete') {
-        if (!confirm(`¿Eliminar «${p.name}» y todos sus fotogramas? Esta acción no se puede deshacer.`)) return;
-        await deleteProject(p.id);
-        renderProjectList();
-      }
+      if (act) projectAction(act, p).catch((err) => toast(err.message, 'error', 6000));
     });
     ul.append(li);
   }
 }
 
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/** Desktop: one group per project with a row per scene/take; secondary actions live in a "⋯" menu. */
+function renderProductionList(list) {
+  const ul = $('#projectList');
+  ul.className = 'prod-list';
+  ul.innerHTML = '';
+  const groups = new Map();
+  for (const t of list) {
+    if (!groups.has(t.production.id)) groups.set(t.production.id, []);
+    groups.get(t.production.id).push(t);
+  }
+  for (const takes of groups.values()) {
+    const latest = takes[0]; // the list comes most recent first
+    takes.sort((a, b) => a.scene.id.localeCompare(b.scene.id) || a.take.id.localeCompare(b.take.id));
+    const single = takes.length === 1;
+    const scenes = new Set(takes.map((t) => t.scene.id)).size;
+    const group = document.createElement('li');
+    group.className = `prod-group${takes.some((t) => t.id === P().id) ? ' current' : ''}`;
+    group.innerHTML = `
+      <div class="prod-head">
+        <div class="prod-title"><div class="name"></div><div class="sub"></div></div>
+        <button class="btn ghost small-btn" data-act="rename">Renombrar</button>
+        <button class="btn ghost small-btn" data-act="newscene" title="Añade una escena nueva a este proyecto, con los mismos ajustes de cámara y visor">+ Escena</button>
+        <button class="btn ghost small-btn" data-act="revealproject" title="Abre la carpeta de este proyecto">Carpeta</button>
+      </div>
+      <ul class="take-list"></ul>`;
+    group.querySelector('.name').textContent = latest.name;
+    group.querySelector('.sub').textContent = `${plural(scenes, 'escena', 'escenas')} · ${plural(takes.length, 'toma', 'tomas')} · ${formatDate(latest.updatedAt)}`;
+    group.querySelector('.prod-head').addEventListener('click', (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act) projectAction(act, latest).catch((err) => toast(err.message, 'error', 6000));
+    });
+    const rows = group.querySelector('.take-list');
+    for (const t of takes) {
+      const current = t.id === P().id;
+      const li = document.createElement('li');
+      li.className = `take-row${current ? ' current' : ''}`;
+      li.innerHTML = `
+        <div class="thumb">${t.frameCount ? '' : 'Vacía'}</div>
+        <div class="info"><div class="name"></div><div class="sub">${plural(t.frameCount, 'fotograma', 'fotogramas')} · ${formatTime(t.exposures, t.fps)} · ${t.fps} fps</div></div>
+        <button class="btn small-btn ${current ? '' : 'primary'}" data-act="open" ${current ? 'disabled' : ''}>${current ? 'Abierta' : 'Abrir'}</button>
+        <details class="menu">
+          <summary class="btn ghost small-btn" title="Más acciones" aria-label="Más acciones">⋯</summary>
+          <div class="menu-list">
+            <button data-act="newtake">Nueva toma de esta escena</button>
+            <button data-act="dupscene">Duplicar escena (con sus fotos)</button>
+            <button data-act="export">Exportar copia (.mesora)</button>
+            <button class="danger" data-act="${single ? 'deleteproject' : 'delete'}">${single ? 'Eliminar proyecto' : 'Eliminar esta toma'}</button>
+          </div>
+        </details>`;
+      li.querySelector('.name').textContent = `${t.scene.name} · ${t.take.name}`;
+      if (t.firstFrameId) {
+        library.getFrame(t.id, t.firstFrameId, 'thumb').then((blob) => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          modalUrls.push(url);
+          li.querySelector('.thumb').style.backgroundImage = `url("${url}")`;
+        }).catch(() => {});
+      }
+      li.querySelector('.thumb').addEventListener('click', () => switchProject(t.id));
+      li.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-act]');
+        if (!btn) return;
+        btn.closest('details')?.removeAttribute('open');
+        projectAction(btn.dataset.act, t).catch((err) => toast(err.message, 'error', 6000));
+      });
+      rows.append(li);
+    }
+    ul.append(group);
+  }
+}
+
+/** Opens the most recent take, or a new project when none is left. */
+async function openMostRecent() {
+  const [recent] = await library.listProjects();
+  const opened = (recent && await library.getProject(recent.id).catch(() => null))
+    || { project: await library.createProject(newProject('Mi animación')), report: null };
+  state.project = null;
+  await openProject(opened.project, opened.report);
+}
+
+async function projectAction(act, p) {
+  const isCurrent = p.id === P().id;
+  if (act === 'open') return switchProject(p.id);
+  if (act === 'rename') {
+    const name = (await askText('Renombrar proyecto', p.name))?.trim();
+    if (!name) return;
+    const sameProduction = isCurrent || (p.production && p.production.id === P().production?.id);
+    if (sameProduction) { P().name = name; els.projectName.value = name; await saveNow(); }
+    if (!isCurrent) await library.renameProject(p.id, name);
+    return renderProjectList();
+  }
+  if (act === 'export') {
+    if (isCurrent) return exportProject(P());
+    const opened = await library.getProject(p.id);
+    return exportProject(opened.project);
+  }
+  if (act === 'delete') {
+    const msg = library.kind === 'disk'
+      ? `¿Eliminar la toma «${p.scene.name} · ${p.take.name}» de «${p.name}»?\n\nSu carpeta, con todas las fotos originales, irá a la papelera del sistema, desde donde se puede recuperar.`
+      : `¿Eliminar «${p.name}» y todos sus fotogramas? Esta acción no se puede deshacer.`;
+    if (!confirm(msg)) return;
+    await deleteProject(p.id);
+    return renderProjectList();
+  }
+  if (act === 'deleteproject') {
+    if (!confirm(`¿Eliminar el proyecto «${p.name}»?\n\nSu carpeta, con todas las fotos originales, irá a la papelera del sistema, desde donde se puede recuperar.`)) return;
+    const isOpen = p.production.id === P().production?.id;
+    if (isOpen) saveSoon.cancel();
+    await library.deleteProduction(p.id);
+    if (isOpen) await openMostRecent();
+    toast(`«${p.name}» se movió a la papelera del sistema`, 'ok');
+    return renderProjectList();
+  }
+  if (act === 'revealproject') return library.reveal(p.id, 'production');
+  if (isCurrent) await saveNow();
+  let opened = null;
+  if (act === 'newtake') {
+    opened = await library.createTake(p.id);
+    toast(`${opened.project.take.name} creada en ${opened.project.scene.name}`, 'ok');
+  } else if (act === 'newscene') {
+    opened = await library.createScene(p.production.id, { copySettingsFrom: p.scene.id });
+    toast(`${opened.project.scene.name} creada`, 'ok');
+  } else if (act === 'dupscene') {
+    const name = (await askText('Nombre de la escena copiada', `${p.scene.name} (copia)`))?.trim();
+    if (!name) return;
+    toast('Copiando la escena…');
+    opened = await library.duplicateScene(p.id, { name });
+    toast(`Escena copiada: ${opened.project.scene.name}`, 'ok');
+  }
+  if (opened) {
+    closeModal($('#modalProjects'));
+    await openProject(opened.project, opened.report);
+  }
+}
+
 async function switchProject(id) {
-  const p = await db.get('projects', id);
-  if (!p) return;
+  if (id === P().id) { closeModal($('#modalProjects')); return; }
+  let opened;
+  try {
+    opened = await library.getProject(id);
+  } catch (err) {
+    toast(`No se pudo abrir: ${err.message}`, 'error', 6000);
+    return;
+  }
+  if (!opened) return;
   closeModal($('#modalProjects'));
-  if (p.id !== P().id) await openProject(p);
+  await openProject(opened.project, opened.report);
 }
 
 async function deleteProject(id) {
-  const frameKeys = await db.keysByIndex('frames', 'projectId', id);
-  const blobKeys = await db.keysByIndex('blobs', 'projectId', id);
-  await db.del('frames', frameKeys);
-  await db.del('blobs', blobKeys);
-  await db.del('projects', id);
-  if (id === P().id) {
-    const rest = (await db.getAll('projects')).sort((a, b) => b.updatedAt - a.updatedAt);
-    let next = rest[0];
-    if (!next) { next = newProject('Mi animación'); await db.put('projects', next); }
-    state.project = null;
-    await openProject(next);
+  if (id === P().id) saveSoon.cancel();
+  await library.deleteProject(id);
+  if (id === P().id) await openMostRecent();
+}
+
+// ---------------------------------------------------------------- production tools (desktop)
+
+function showList(title, hint, items) {
+  $('#modalListTitle').textContent = title;
+  $('#modalListHint').textContent = hint;
+  const ul = $('#modalListItems');
+  ul.innerHTML = '';
+  ul.append(...items);
+  openModal('#modalList');
+}
+
+async function openTrash() {
+  const project = P();
+  await saveNow();
+  const ids = await library.listTrash(project.id);
+  const items = ids.map((id) => {
+    const li = document.createElement('li');
+    li.className = 'project-item';
+    li.innerHTML = `
+      <div class="thumb"></div>
+      <div class="info"><div class="name"></div></div>
+      <div class="actions"><button class="btn primary" data-act="restore">Restaurar</button></div>`;
+    li.querySelector('.name').textContent = `Captura ${id}`;
+    store.thumbUrl(id).then((url) => { if (url) li.querySelector('.thumb').style.backgroundImage = `url("${url}")`; });
+    li.querySelector('[data-act="restore"]').addEventListener('click', () => {
+      if (P() !== project) return;
+      commit((fr) => {
+        const at = isLive() ? fr.length : state.playhead + 1;
+        const entry = { key: uid(), id, hold: 1 };
+        fr.splice(at, 0, entry);
+        state.selection = new Set([entry.key]);
+        state.playhead = at;
+      });
+      li.remove();
+      toast(`Captura ${id} restaurada en el timeline`, 'ok');
+    });
+    return li;
+  });
+  showList('Papelera de la toma', ids.length
+    ? 'Fotogramas borrados de esta toma. Sus originales nunca se han borrado del disco. «Restaurar» los vuelve a poner después del fotograma actual.'
+    : 'La papelera está vacía.', items);
+}
+
+async function openHistory() {
+  const project = P();
+  await saveNow();
+  const versions = await library.listHistory(project.id);
+  const items = versions.map((v) => {
+    const li = document.createElement('li');
+    li.className = 'project-item';
+    li.innerHTML = `
+      <div class="info"><div class="name"></div><div class="sub"></div></div>
+      <div class="actions"><button class="btn" data-act="restore">Restaurar esta versión</button></div>`;
+    li.querySelector('.name').textContent = formatDate(v.updatedAt);
+    li.querySelector('.sub').textContent = `${v.frameCount} fotogramas`;
+    li.querySelector('[data-act="restore"]').addEventListener('click', async () => {
+      if (P() !== project) return;
+      if (!confirm('¿Volver a esta versión del timeline? La versión actual se guarda antes en el historial.')) return;
+      saveSoon.cancel();
+      const opened = await library.restoreHistory(project.id, v.version);
+      closeModal($('#modalList'));
+      state.project = null;
+      await openProject(opened.project, opened.report);
+      toast('Versión restaurada', 'ok');
+    });
+    return li;
+  });
+  showList('Historial del timeline', versions.length
+    ? 'MESORA guarda una versión antes de cada cambio que quita fotogramas y, además, una por minuto mientras trabajas. Restaurar no borra ninguna foto.'
+    : 'Todavía no hay versiones anteriores de esta toma.', items);
+}
+
+async function conformTake() {
+  await saveNow();
+  toast('Copiando las fotos originales en orden…');
+  const { dir, count } = await library.conform(P().id, { expandHolds: true });
+  toast(`${count} fotos copiadas en orden, numeradas desde 0001.`, 'ok', 9000, [
+    { label: 'Abrir carpeta', onClick: () => library.revealPath(dir).catch((err) => toast(err.message, 'error')) },
+  ]);
+}
+
+// ---------------------------------------------------------------- migration from the old storage
+
+async function migrateOldProjects() {
+  let pending;
+  try {
+    pending = await pendingBrowserProjects();
+  } catch (err) {
+    console.warn('No se pudo revisar el almacenamiento anterior', err);
+    return;
   }
+  if (!pending.length) return;
+  toast(`Pasando ${pending.length} ${pending.length === 1 ? 'proyecto' : 'proyectos'} a carpetas de producción…`, 'info', 6000);
+  let ok = 0;
+  for (const old of pending) {
+    try {
+      const { missing } = await migrateProject(old);
+      ok++;
+      if (missing) toast(`«${old.name}»: ${missing} fotogramas no tenían imagen y no se copiaron`, 'warn', 8000);
+    } catch (err) {
+      toast(`No se pudo pasar «${old.name}» a carpetas: ${err.message}. Se volverá a intentar en el próximo inicio.`, 'error', 9000);
+    }
+  }
+  if (ok) toast(`${ok} ${ok === 1 ? 'proyecto copiado' : 'proyectos copiados'} a ${await library.root()}. Los originales anteriores no se han tocado.`, 'ok', 9000);
 }
 
 // ---------------------------------------------------------------- export
@@ -1815,6 +2072,23 @@ function onKeyDown(e) {
 function bindUI() {
   document.body.classList.toggle('is-android', isAndroidApp);
   document.body.classList.toggle('is-desktop-app', isDesktopApp);
+  if (library.kind === 'disk') {
+    $('#diskTools').hidden = false;
+    els.saveState.title = 'Tu trabajo se guarda automáticamente en la carpeta de la producción (Documentos/MESORA)';
+    $('#welcomeStorage').textContent = 'Todo se guarda automáticamente en carpetas dentro de Documentos/MESORA: tus fotos originales se pueden abrir con cualquier programa.';
+    const run = (fn) => () => fn().catch((err) => toast(err.message, 'error', 6000));
+    $('#btnTrash').addEventListener('click', run(openTrash));
+    $('#btnHistory').addEventListener('click', run(openHistory));
+    $('#btnConform').addEventListener('click', run(conformTake));
+    $('#btnRevealTake').addEventListener('click', run(() => library.reveal(P().id)));
+    $('#projectsHint').hidden = false;
+    $('#btnRevealLibrary').addEventListener('click', run(() => library.reveal()));
+    els.takeLabel.addEventListener('click', () => { renderProjectList(); openModal('#modalProjects'); });
+    // Close an open "⋯" menu when clicking anywhere else.
+    document.addEventListener('click', (e) => {
+      for (const menu of document.querySelectorAll('details.menu[open]')) if (!menu.contains(e.target)) menu.removeAttribute('open');
+    });
+  }
   bindSettings();
   initSections();
   document.addEventListener('keydown', onKeyDown);
@@ -1915,8 +2189,7 @@ function bindUI() {
   $('#btnProjects').addEventListener('click', () => { renderProjectList(); openModal('#modalProjects'); });
   $('#formNewProject').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const p = newProject($('#newProjectName').value.trim() || 'Sin título', Number($('#newProjectFps').value));
-    await db.put('projects', p);
+    const p = await library.createProject(newProject($('#newProjectName').value.trim() || 'Sin título', Number($('#newProjectFps').value)));
     $('#newProjectName').value = '';
     closeModal($('#modalProjects'));
     await openProject(p);
@@ -2005,18 +2278,21 @@ async function init() {
   const prefs = camPrefs();
   if (prefs.resolution) els.camRes.value = prefs.resolution;
   try {
-    await db.openDB();
+    await library.init();
   } catch (err) {
     toast(`El almacenamiento local no está disponible: ${err.message}`, 'error', 8000);
     return;
   }
-  db.persist();
-  let p = null;
+  if (library.kind === 'disk') await migrateOldProjects();
+  let opened = null;
   const last = localStorage.getItem(LS_LAST);
-  if (last) p = await db.get('projects', last);
-  if (!p) p = (await db.getAll('projects')).sort((a, b) => b.updatedAt - a.updatedAt)[0];
-  if (!p) { p = newProject('Mi primera animación'); await db.put('projects', p); }
-  await openProject(p);
+  if (last) opened = await library.getProject(last).catch(() => null);
+  if (!opened) {
+    const [recent] = await library.listProjects();
+    if (recent) opened = await library.getProject(recent.id).catch(() => null);
+  }
+  if (!opened) opened = { project: await library.createProject(newProject('Mi primera animación')), report: null };
+  await openProject(opened.project, opened.report);
   buildCamControls();
   updateCamUI();
   await refreshDevices();

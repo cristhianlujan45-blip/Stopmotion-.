@@ -13,6 +13,7 @@ export function debounce(fn, ms) {
     t = setTimeout(() => fn(...args), ms);
   };
   wrapped.flush = (...args) => { clearTimeout(t); fn(...args); };
+  wrapped.cancel = () => clearTimeout(t);
   return wrapped;
 }
 
@@ -83,12 +84,32 @@ export function typeForName(name) {
 }
 
 let toastRoot = null;
-export function toast(message, type = 'info', ms = 2800) {
+/**
+ * Shows a short message. `actions` adds buttons to it, e.g.
+ * [{ label: 'Deshacer', onClick: undo }]; clicking one closes the message.
+ */
+export function toast(message, type = 'info', ms = 2800, actions = []) {
   toastRoot ??= document.getElementById('toasts');
   if (!toastRoot) return;
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.textContent = message;
+  const text = document.createElement('span');
+  text.textContent = message;
+  el.append(text);
+  if (actions.length) {
+    el.classList.add('has-actions');
+    const row = document.createElement('div');
+    row.className = 'toast-actions';
+    for (const { label, onClick } of actions) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn small';
+      btn.textContent = label;
+      btn.addEventListener('click', () => { el.remove(); onClick(); });
+      row.append(btn);
+    }
+    el.append(row);
+  }
   toastRoot.appendChild(el);
   setTimeout(() => el.remove(), ms);
 }
