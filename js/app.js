@@ -14,9 +14,12 @@ import {
 } from './timing.js';
 import { supportedVideoTypes, renderVideo, buildImageSequence, outputSize } from './exporter.js';
 import { exportProjectFile, importProjectFile } from './projectio.js';
+import { deflickerGains, gradeFilter } from './grading.js';
 
 const LS_LAST = 'mesora.lastProject';
 const LS_CAMERA = 'mesora.camera';
+const LS_WELCOMED = 'mesora.welcomed';
+const LS_SECTIONS = 'mesora.sections';
 const GRID_CYCLE = ['none', 'thirds', 'quarters', 'fine', 'center'];
 
 function defaultSettings() {
@@ -46,6 +49,8 @@ function defaultSettings() {
     pingpong: false,
     timelapseInterval: 5,
     zoom: 72,
+    grade: { brightness: 1, contrast: 1, saturation: 1, deflicker: false },
+    reference: { blobId: null, name: '', opacity: 0.5, offset: 0, visible: true },
   };
 }
 
@@ -75,6 +80,10 @@ const els = {
   hudFlags: $('#hudFlags'),
   dropHint: $('#dropHint'),
   projectName: $('#projectName'),
+  saveState: $('#saveState'),
+  hudNote: $('#hudNote'),
+  frameNote: $('#frameNote'),
+  refInfo: $('#refInfo'),
   camDevice: $('#camDevice'),
   camRes: $('#camRes'),
   camToggle: $('#btnCamToggle'),
@@ -119,10 +128,14 @@ const state = {
   chromaBg: null,
   exportAbort: null,
   lastHist: 0,
+  gains: new Map(),
+  ref: null,
+  pendingCaptures: 0,
+  saving: false,
 };
 
 const player = {
-  playing: false, exposures: [], t0: 0, startExposure: 0, step: -1, index: -1,
+  playing: false, exposures: [], t0: 0, startExposure: 0, step: -1, index: -1, exposure: 0,
   loop: false, pingpong: false, thenLive: false, returnTo: 0,
 };
 
@@ -135,10 +148,12 @@ const viewer = new Viewer({
   guides: els.guides, loupe: els.loupe,
 });
 const timeline = new Timeline({
-  wrap: $('#timelineWrap'), root: $('#timeline'), wave: $('#waveform'), store,
+  wrap: $('#timelineWrap'), root: $('#timeline'), ruler: $('#ruler'), wave: $('#waveform'), store,
   onSelect: onTimelineSelect,
   onLive: () => goLive(),
   onMove: (target) => moveSelected(target),
+  onScrub: (i) => setPlayhead(i),
+  onZoom: (dir) => setSetting('zoom', clamp(Math.round(S().zoom * (dir > 0 ? 1.15 : 1 / 1.15)), 28, 180)),
 });
 
 const P = () => state.project;
@@ -152,9 +167,29 @@ function saveNow() {
   const p = P();
   if (!p) return Promise.resolve();
   p.updatedAt = Date.now();
-  return db.put('projects', p).catch((err) => toast(`No se pudo guardar: ${err.message}`, 'error'));
+  state.saving = true;
+  updateSaveState();
+  return db.put('projects', p)
+    .then(() => { state.saving = false; updateSaveState(); })
+    .catch((err) => {
+      state.saving = false;
+      updateSaveState(err);
+      toast(`No se pudo guardar: ${err.message}`, 'error');
+    });
 }
 const saveSoon = debounce(saveNow, 400);
+
+function updateSaveState(error) {
+  const el = els.saveState;
+  const label = el.querySelector('span');
+  el.classList.toggle('error', !!error);
+  const busy = state.saving || state.pendingCaptures > 0;
+  el.classList.toggle('saving', busy && !error);
+  if (error) label.textContent = 'Error al guardar';
+  else if (state.pendingCaptures > 1) label.textContent = `Guardando ${state.pendingCaptures} capturas…`;
+  else if (busy) label.textContent = 'Guardando…';
+  else label.textContent = 'Guardado';
+}
 
 async function openProject(p) {
   stopPlayback(false);
@@ -164,7 +199,8 @@ async function openProject(p) {
   history.clear();
   p.settings = withDefaults(p.settings, defaultSettings());
   p.guides ??= [];
-  p.frames = (p.frames || []).map((f) => ({ key: f.key || uid(), id: f.id, hold: f.hold || 1 }));
+  p.frames = (p.frames || []).map((f) => ({ key: f.key || uid(), id: f.id, hold: f.hold || 1, ...(f.note ? { note: f.note } : {}) }));
+  state.gains = new Map();
   state.project = p;
   state.playhead = p.frames.length;
   state.selection = new Set();
@@ -179,6 +215,8 @@ async function openProject(p) {
   renderTimeline();
   await restoreAudio();
   await restoreChromaBg();
+  await restoreReference();
+  scheduleGains();
   refresh();
   updateProjectInfo();
   store.collectGarbage(p.id, p.frames.map((f) => f.id)).catch(() => {});
@@ -211,6 +249,14 @@ function loop(now) {
   if (state.loupe && state.loupePos) updateLoupe();
 }
 
+/** Colour grade + deflicker filter for the frame at `index`. */
+function frameFilter(index) {
+  const g = S().grade;
+  const f = frames()[index];
+  const gain = g.deflicker && f ? state.gains.get(f.key) ?? 1 : 1;
+  return gradeFilter(g, gain);
+}
+
 function drawOnion(fromIndex) {
   const s = S().onion;
   const fr = frames();
@@ -235,8 +281,9 @@ function compose(now) {
     const bmp = f && store.peek(f.id);
     if (!bmp) return;
     v.clear();
-    v.draw(bmp, bmp.width, bmp.height);
+    v.draw(bmp, bmp.width, bmp.height, { filter: frameFilter(player.index) });
     if (keyed) v.chroma(s.chroma, state.chromaBg);
+    drawReference(player.exposure);
     return;
   }
 
@@ -266,12 +313,29 @@ function compose(now) {
       v.draw(prev, prev.width, prev.height);
       v.draw(bmp, bmp.width, bmp.height, { op: 'difference' });
     } else {
-      v.draw(bmp, bmp.width, bmp.height);
+      v.draw(bmp, bmp.width, bmp.height, { filter: frameFilter(i) });
       if (s.onion.enabled && i > 0) drawOnion(i - 1);
     }
   }
   if (keyed) v.chroma(s.chroma, state.chromaBg);
   if (s.peaking) v.peaking(s.peakingThreshold);
+  drawReference(isLive() ? totalExposures(fr) : exposureStart(fr, state.playhead));
+}
+
+/** Reference (rotoscope) layer, kept in sync with the exposure being shown. */
+function drawReference(exposure) {
+  const ref = state.ref;
+  const r = S().reference;
+  if (!ref || !r.visible) return;
+  if (ref.kind === 'image') {
+    viewer.draw(ref.el, ref.el.width, ref.el.height, { alpha: r.opacity });
+    return;
+  }
+  const video = ref.el;
+  const t = (exposure - r.offset) / P().fps;
+  if (t < 0 || !(video.duration > 0) || t > video.duration) return;
+  if (Math.abs(video.currentTime - t) > 0.5 / P().fps && !video.seeking) video.currentTime = t;
+  if (video.readyState >= 2) viewer.draw(video, video.videoWidth, video.videoHeight, { alpha: r.opacity });
 }
 
 function drawOverlays() {
@@ -299,7 +363,7 @@ function startPlayback({ start = 0, end = frames().length, loop = S().loop, ping
   if (!exposures.length) return;
   Object.assign(player, {
     playing: true, exposures, t0: performance.now(), startExposure: exposureStart(fr, start),
-    step: -1, index: exposures[0], loop, pingpong, thenLive, returnTo: state.playhead,
+    step: -1, index: exposures[0], exposure: exposureStart(fr, start), loop, pingpong, thenLive, returnTo: state.playhead,
   });
   playAudioFrom(0);
   for (let k = 0; k < Math.min(24, exposures.length); k++) store.load(fr[exposures[k]].id);
@@ -335,6 +399,7 @@ function tickPlayer(now) {
   if (step === player.step) return;
   player.step = step;
   player.index = player.exposures[pos];
+  player.exposure = player.startExposure + pos;
   state.dirty = true;
   const fr = frames();
   for (let k = 1; k <= 12; k++) {
@@ -473,14 +538,30 @@ function afterFramesChanged() {
   for (const k of state.selection) if (!keys.has(k)) state.selection.delete(k);
   renderTimeline();
   saveSoon();
+  scheduleGains();
   refresh();
   updateProjectInfo();
 }
 
 function renderTimeline() {
-  timeline.render(frames(), S().zoom);
+  timeline.render(frames(), S().zoom, P().fps);
   drawWave();
 }
+
+// Deflicker gains depend on the whole sequence, so they are recomputed after edits.
+let gainsRun = 0;
+const scheduleGains = debounce(async () => {
+  const p = P();
+  if (!p || !p.settings.grade.deflicker) return;
+  const run = ++gainsRun;
+  const fr = p.frames.slice();
+  const lumas = [];
+  for (const f of fr) lumas.push(await store.luma(f.id));
+  if (run !== gainsRun || P() !== p) return;
+  const gains = deflickerGains(lumas);
+  state.gains = new Map(fr.map((f, i) => [f.key, gains[i]]));
+  state.dirty = true;
+}, 250);
 
 function drawWave() {
   const p = P();
@@ -505,7 +586,7 @@ function duplicateSelected() {
   const idx = selectedIndices();
   if (!idx.length) return;
   commit((fr) => {
-    const copies = idx.map((i) => ({ key: uid(), id: fr[i].id, hold: fr[i].hold }));
+    const copies = idx.map((i) => ({ ...fr[i], key: uid() }));
     const at = idx[idx.length - 1] + 1;
     fr.splice(at, 0, ...copies);
     state.selection = new Set(copies.map((c) => c.key));
@@ -594,6 +675,8 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
   flash();
   if (s.shutterSound) audio.shutter();
 
+  state.pendingCaptures++;
+  updateSaveState();
   const job = saveChain.then(async () => {
     if (P() !== project) return;
     if (!frames().length) setProjectSize(canvas.width, canvas.height);
@@ -604,6 +687,7 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
       const at = state.playhead;
       if (mode === 'replace' && at < fr.length) {
         entry.hold = fr[at].hold;
+        if (fr[at].note) entry.note = fr[at].note;
         fr.splice(at, 1, entry);
         state.selection = new Set([entry.key]);
       } else if (mode === 'insert' && at < fr.length) {
@@ -620,6 +704,9 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
     console.error(err);
     const quota = err?.name === 'QuotaExceededError';
     toast(quota ? 'No queda espacio de almacenamiento en el navegador' : `Error al guardar la captura: ${err.message}`, 'error', 4500);
+  }).finally(() => {
+    state.pendingCaptures--;
+    updateSaveState();
   });
   saveChain = job;
   return job;
@@ -796,10 +883,35 @@ function refresh() {
   updateHud();
   updateTransport();
   updateStageEmpty();
+  updateNoteUI();
+}
+
+// ---------------------------------------------------------------- frame notes (X-sheet)
+
+function updateNoteUI() {
+  const f = isLive() ? null : frames()[state.playhead];
+  els.frameNote.disabled = !f;
+  if (document.activeElement !== els.frameNote) els.frameNote.value = f?.note || '';
+  els.frameNote.placeholder = f ? 'Nota o fonema (N)' : 'Elige un fotograma';
+}
+
+function setNote(text) {
+  const i = state.playhead;
+  const f = frames()[i];
+  if (!f) return;
+  const note = text.trim();
+  if ((f.note || '') === note) return;
+  commit((fr) => {
+    if (note) fr[i].note = note;
+    else delete fr[i].note;
+  });
 }
 
 function updateHud(exposure) {
   const fr = frames();
+  const shown = player.playing ? fr[player.index] : fr[state.playhead];
+  els.hudNote.hidden = !shown?.note;
+  els.hudNote.textContent = shown?.note || '';
   const fps = P().fps;
   const total = totalExposures(fr);
   if (player.playing) {
@@ -906,7 +1018,7 @@ function updateOutputs() {
   for (const out of $$('[data-out]')) {
     const path = out.dataset.out;
     const v = getPath(s, path);
-    if (/opacity|quality/.test(path)) out.textContent = `${Math.round(v * 100)}%`;
+    if (/opacity|quality|grade\./.test(path)) out.textContent = `${Math.round(v * 100)}%`;
     else if (path === 'blinkRate') out.textContent = `${v} /s`;
     else if (path.startsWith('chroma.')) out.textContent = v.toFixed(3);
     else if (path === 'guideWidth') out.textContent = `${v}px`;
@@ -923,6 +1035,7 @@ function onSettingChanged(path) {
   if (path === 'histogram') els.histogram.hidden = !S().histogram;
   if (path === 'zoom') renderTimeline();
   if (path === 'timelapseInterval' && state.timelapseTimer) { stopTimelapse(); startTimelapse(); }
+  if (path === 'grade.deflicker') { state.gains = new Map(); scheduleGains(); }
   updateHudFlags();
   updateTransport();
 }
@@ -1131,6 +1244,84 @@ function clearChromaBg() {
   state.chromaBg = null;
   saveSoon();
   state.dirty = true;
+}
+
+// ---------------------------------------------------------------- reference layer (rotoscope)
+
+function releaseReference() {
+  const ref = state.ref;
+  if (!ref) return;
+  if (ref.kind === 'video') {
+    ref.el.removeAttribute('src');
+    ref.el.load();
+  } else ref.el.close?.();
+  URL.revokeObjectURL(ref.url || '');
+  state.ref = null;
+}
+
+async function openReference(blob) {
+  releaseReference();
+  if (blob.type.startsWith('image/')) {
+    state.ref = { kind: 'image', el: await createImageBitmap(blob) };
+  } else {
+    const url = URL.createObjectURL(blob);
+    const video = document.createElement('video');
+    Object.assign(video, { muted: true, playsInline: true, preload: 'auto', src: url });
+    await new Promise((resolve, reject) => {
+      video.onloadeddata = resolve;
+      video.onerror = () => reject(new Error('Formato de video no soportado'));
+    });
+    video.addEventListener('seeked', () => { state.dirty = true; });
+    state.ref = { kind: 'video', el: video, url };
+  }
+  state.dirty = true;
+}
+
+async function restoreReference() {
+  releaseReference();
+  const id = S().reference.blobId;
+  if (id) {
+    const rec = await db.get('blobs', id).catch(() => null);
+    if (rec) await openReference(rec.blob).catch(() => {});
+  }
+  updateReferenceUI();
+}
+
+async function setReference(file) {
+  const project = P();
+  try {
+    await openReference(file);
+  } catch (err) {
+    toast(`No se pudo cargar la referencia: ${err.message}`, 'error');
+    return;
+  }
+  const id = uid();
+  await db.put('blobs', { id, projectId: project.id, name: file.name, blob: file });
+  const r = S().reference;
+  if (r.blobId) db.del('blobs', r.blobId).catch(() => {});
+  Object.assign(r, { blobId: id, name: file.name, visible: true });
+  applySettingsToUI();
+  saveSoon();
+  updateReferenceUI();
+  toast(`Referencia cargada: ${file.name}`, 'ok');
+}
+
+function clearReference() {
+  const r = S().reference;
+  if (r.blobId) db.del('blobs', r.blobId).catch(() => {});
+  Object.assign(r, { blobId: null, name: '' });
+  releaseReference();
+  saveSoon();
+  updateReferenceUI();
+  state.dirty = true;
+}
+
+function updateReferenceUI() {
+  const ref = state.ref;
+  const r = S().reference;
+  if (!ref) { els.refInfo.textContent = 'Sin referencia'; return; }
+  const extra = ref.kind === 'video' ? ` · ${ref.el.duration.toFixed(1)} s (${Math.ceil(ref.el.duration * P().fps)} cuadros)` : ' · imagen';
+  els.refInfo.textContent = `${r.name}${extra}`;
 }
 
 // ---------------------------------------------------------------- time-lapse
@@ -1367,6 +1558,18 @@ function exportRange() {
   return [0, fr.length];
 }
 
+/** Grade filters for frames [a, b), indexed relative to `a`. */
+async function exportFilters(a, b) {
+  if (S().grade.deflicker) {
+    scheduleGains.flush();
+    // wait for the gains of every frame in range
+    for (let tries = 0; tries < 200 && frames().slice(a, b).some((f) => !state.gains.has(f.key)); tries++) await sleep(50);
+  }
+  const out = [];
+  for (let i = a; i < b; i++) out.push(frameFilter(i));
+  return out.every((f) => f === 'none') ? null : out;
+}
+
 async function exportVideo() {
   const types = supportedVideoTypes();
   const type = types[Number($('#exFormat').value)] || types[0];
@@ -1384,6 +1587,7 @@ async function exportVideo() {
   try {
     const blob = await renderVideo({
       frames: fr.slice(a, b), fps: p.fps, store, width: w, height: h, type,
+      filters: $('#exGrade').checked ? await exportFilters(a, b) : null,
       bitrate: Number($('#exBitrate').value),
       audio: $('#exAudio').checked && audio.ready ? audio : null,
       audioOffset: p.audio?.offset || 0,
@@ -1411,6 +1615,7 @@ async function exportZip() {
   try {
     const blob = await buildImageSequence({
       frames: fr.slice(a, b), store, expand: $('#exExpand').checked,
+      filters: $('#exGradeZip').checked ? await exportFilters(a, b) : null,
       baseName: safeFileName(P().name).replace(/\s+/g, '_'),
       onProgress: (v) => showProgress(`Empaquetando imágenes… ${Math.round(v * 100)}%`, v),
     });
@@ -1472,6 +1677,30 @@ function populateExportFormats() {
   $('#btnExportVideo').disabled = !types.length;
 }
 
+// ---------------------------------------------------------------- fullscreen, panels, welcome
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen?.();
+  else document.documentElement.requestFullscreen?.().catch(() => toast('Pantalla completa no disponible', 'warn'));
+}
+
+function initSections() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(LS_SECTIONS)) || {}; } catch { /* ignore */ }
+  for (const d of $$('details[data-sec]')) {
+    if (d.dataset.sec in saved) d.open = saved[d.dataset.sec];
+    d.addEventListener('toggle', () => {
+      saved[d.dataset.sec] = d.open;
+      localStorage.setItem(LS_SECTIONS, JSON.stringify(saved));
+    });
+  }
+}
+
+function showWelcome() {
+  for (const m of $$('.modal')) m.hidden = true;
+  openModal('#modalWelcome');
+}
+
 // ---------------------------------------------------------------- keyboard
 
 function onKeyDown(e) {
@@ -1515,7 +1744,14 @@ function onKeyDown(e) {
     case 'd': case 'D': setMode('difference'); break;
     case 'b': case 'B': toggleBlink(); break;
     case 'g': case 'G': setSetting('grid', GRID_CYCLE[(GRID_CYCLE.indexOf(S().grid) + 1) % GRID_CYCLE.length]); break;
-    case 'f': case 'F': setSetting('peaking', !S().peaking); break;
+    case 'f': case 'F':
+      if (e.shiftKey) toggleFullscreen();
+      else setSetting('peaking', !S().peaking);
+      break;
+    case 'n': case 'N':
+      if (els.frameNote.disabled) toast('Elige un fotograma en la línea de tiempo para anotarlo', 'info', 2000);
+      else { els.frameNote.focus(); els.frameNote.select(); }
+      break;
     case 'z': case 'Z': toggleLoupe(); break;
     case 'Delete': case 'Backspace': deleteSelected(); break;
     case '+': case '=': changeHold(1); break;
@@ -1535,6 +1771,7 @@ function onKeyDown(e) {
 
 function bindUI() {
   bindSettings();
+  initSections();
   document.addEventListener('keydown', onKeyDown);
   // Keep keyboard shortcuts working after clicking buttons.
   document.addEventListener('click', (e) => {
@@ -1601,7 +1838,8 @@ function bindUI() {
   els.fps.addEventListener('change', () => {
     P().fps = Number(els.fps.value);
     saveSoon();
-    drawWave();
+    renderTimeline();
+    updateReferenceUI();
     updateHud();
     updateProjectInfo();
     updateAudioUI();
@@ -1649,6 +1887,32 @@ function bindUI() {
   $('#btnExportCancel').addEventListener('click', () => state.exportAbort?.abort());
 
   $('#btnHelp').addEventListener('click', () => openModal('#modalHelp'));
+  $('#btnShowWelcome').addEventListener('click', showWelcome);
+  $('#btnWelcomeHelp').addEventListener('click', () => { closeModal($('#modalWelcome')); openModal('#modalHelp'); });
+  $('#btnWelcomeStart').addEventListener('click', () => {
+    closeModal($('#modalWelcome'));
+    if (!camera.active) startCamera();
+  });
+  $('#btnFullscreen').addEventListener('click', toggleFullscreen);
+
+  els.frameNote.addEventListener('change', () => setNote(els.frameNote.value));
+  els.frameNote.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); els.frameNote.blur(); }
+    else if (e.key === 'Escape') {
+      els.frameNote.value = frames()[state.playhead]?.note || '';
+      els.frameNote.blur();
+    }
+    e.stopPropagation();
+  });
+
+  $('#btnGradeReset').addEventListener('click', () => {
+    Object.assign(S().grade, { brightness: 1, contrast: 1, saturation: 1, deflicker: false });
+    applySettingsToUI();
+    onSettingChanged('grade');
+  });
+  $('#btnRef').addEventListener('click', () => $('#fileRef').click());
+  $('#fileRef').addEventListener('change', (e) => { if (e.target.files[0]) setReference(e.target.files[0]); e.target.value = ''; });
+  $('#btnRefClear').addEventListener('click', clearReference);
   for (const m of $$('.modal')) {
     m.addEventListener('click', (e) => {
       if (e.target === m || e.target.closest('[data-close]')) {
@@ -1709,6 +1973,11 @@ async function init() {
   updateCamUI();
   await refreshDevices();
   requestAnimationFrame(loop);
+
+  if (!localStorage.getItem(LS_WELCOMED)) {
+    localStorage.setItem(LS_WELCOMED, '1');
+    showWelcome();
+  }
 
   try {
     const perm = await navigator.permissions?.query({ name: 'camera' });

@@ -1,5 +1,6 @@
 import * as db from './db.js';
 import { uid, makeCanvas, canvasToBlob } from './util.js';
+import { meanLuma } from './grading.js';
 
 export const PREVIEW_MAX = 1280;
 export const THUMB_H = 72;
@@ -13,6 +14,7 @@ export class FrameStore {
     this.cache = new Map();
     this.pending = new Map();
     this.thumbUrls = new Map();
+    this.lumas = new Map();
     this.maxCache = maxCache;
     this.onLoad = onLoad;
   }
@@ -45,15 +47,17 @@ export class FrameStore {
     const th = THUMB_H;
     const tw = Math.round((w * th) / h);
     const tc = makeCanvas(tw, th);
-    const tctx = tc.getContext('2d');
+    const tctx = tc.getContext('2d', { willReadFrequently: true });
     tctx.imageSmoothingQuality = 'high';
     tctx.drawImage(pc, 0, 0, tw, th);
+    const luma = meanLuma(tctx.getImageData(0, 0, tw, th).data);
     const [preview, thumb, bitmap] = await Promise.all([
       canvasToBlob(pc, 'image/jpeg', 0.88),
       canvasToBlob(tc, 'image/jpeg', 0.78),
       createImageBitmap(pc),
     ]);
-    await db.put('frames', { id, projectId, full, preview, thumb, w, h, created: Date.now() });
+    await db.put('frames', { id, projectId, full, preview, thumb, w, h, luma, created: Date.now() });
+    this.lumas.set(id, luma);
     this._set(`${id}:preview`, bitmap);
     return { id, w, h };
   }
@@ -99,6 +103,25 @@ export class FrameStore {
     const rec = await db.get('frames', id);
     if (!rec) return null;
     return options ? createImageBitmap(rec[kind], options) : createImageBitmap(rec[kind]);
+  }
+
+  /** Mean brightness of a frame (measured on its thumbnail). */
+  async luma(id) {
+    if (this.lumas.has(id)) return this.lumas.get(id);
+    const rec = await db.get('frames', id);
+    if (!rec) return 0;
+    let luma = rec.luma;
+    if (luma == null) {
+      const bmp = await createImageBitmap(rec.thumb);
+      const c = makeCanvas(bmp.width, bmp.height);
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(bmp, 0, 0);
+      bmp.close?.();
+      luma = meanLuma(ctx.getImageData(0, 0, c.width, c.height).data);
+      db.put('frames', { ...rec, luma }).catch(() => {});
+    }
+    this.lumas.set(id, luma);
+    return luma;
   }
 
   getRecord(id) {

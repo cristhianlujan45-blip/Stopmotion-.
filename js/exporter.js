@@ -1,4 +1,4 @@
-import { makeCanvas, fitContain, extForType, pad, sleep } from './util.js';
+import { makeCanvas, fitContain, extForType, pad, sleep, canvasToBlob } from './util.js';
 import { expandExposures } from './timing.js';
 import { createZip } from './zip.js';
 
@@ -44,7 +44,7 @@ export function outputSize(srcW, srcH, targetH) {
  */
 export async function renderVideo({
   frames, fps, store, width, height, type, bitrate, audio, audioOffset = 0, startExposure = 0,
-  onProgress, signal,
+  filters = null, onProgress, signal,
 }) {
   const canvas = makeCanvas(width, height);
   const ctx = canvas.getContext('2d');
@@ -112,7 +112,9 @@ export async function renderVideo({
         if (bmp) {
           const f = fitContain(bmp.width, bmp.height, width, height);
           ctx.imageSmoothingQuality = 'high';
+          ctx.filter = filters?.[idx] || 'none';
           ctx.drawImage(bmp, f.x, f.y, f.w, f.h);
+          ctx.filter = 'none';
         }
       }
       vtrack.requestFrame?.();
@@ -132,16 +134,37 @@ export async function renderVideo({
   return new Blob(chunks, { type: mimeType.split(';')[0] });
 }
 
-/** ZIP with one image per frame (or per exposure). */
-export async function buildImageSequence({ frames, store, expand = true, baseName = 'frame', onProgress }) {
+/** Re-encodes an image with a canvas filter applied (colour grade / deflicker). */
+async function applyFilter(blob, filter) {
+  const bmp = await createImageBitmap(blob);
+  const c = makeCanvas(bmp.width, bmp.height);
+  const ctx = c.getContext('2d');
+  ctx.filter = filter;
+  ctx.drawImage(bmp, 0, 0);
+  bmp.close?.();
+  const type = blob.type === 'image/png' ? 'image/png' : 'image/jpeg';
+  return canvasToBlob(c, type, 0.95);
+}
+
+/**
+ * ZIP with one image per frame (or per exposure). Without `filters` the
+ * original captures are copied untouched.
+ */
+export async function buildImageSequence({ frames, store, expand = true, baseName = 'frame', filters = null, onProgress }) {
   const indices = expand ? expandExposures(frames) : frames.map((_, i) => i);
   const files = [];
-  const recCache = new Map();
+  const cache = new Map();
   for (let n = 0; n < indices.length; n++) {
-    const id = frames[indices[n]].id;
-    let rec = recCache.get(id);
-    if (!rec) { rec = await store.getRecord(id); recCache.set(id, rec); }
-    files.push({ name: `${baseName}_${pad(n + 1, 5)}.${extForType(rec.full.type)}`, data: rec.full });
+    const idx = indices[n];
+    let data = cache.get(idx);
+    if (!data) {
+      const rec = await store.getRecord(frames[idx].id);
+      const filter = filters?.[idx] || 'none';
+      data = filter === 'none' ? rec.full : await applyFilter(rec.full, filter);
+      cache.clear();
+      cache.set(idx, data);
+    }
+    files.push({ name: `${baseName}_${pad(n + 1, 5)}.${extForType(data.type)}`, data });
     onProgress?.((n + 1) / indices.length / 2);
   }
   return createZip(files, (done, total) => onProgress?.(0.5 + done / total / 2));

@@ -14,6 +14,11 @@ La cámara solo está disponible en `https://` o `localhost`. Abrir `index.html`
 
 Requisitos: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes. Node 18+ solo hace falta para el servidor local y los tests.
 
+## Primeros pasos
+
+La primera vez que abres MESORA aparece una **guía de inicio** en cuatro pasos. Puedes volver a abrirla desde el botón **?**.
+Cada panel explica para qué sirve y las opciones avanzadas están plegadas para no abrumar.
+
 ## Funciones
 
 **Captura**
@@ -34,8 +39,17 @@ Requisitos: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes. Node 18+
 - Cuadrículas (tercios, cuartos, fina, cruz), máscaras de encuadre (2.39, 1.85, 16:9, 4:3, 1:1, 4:5, 9:16) y zonas seguras.
 - **Capa de guías** dibujada a mano para trayectorias y arcos. Las guías no salen en la captura.
 
+**Color y luz**
+- **Estabilización de luz automática (deflicker)**: corrige los cambios de brillo entre fotos causados por luz natural o por la cámara. Respeta los fundidos intencionados. En una prueba con fotos que saltaban un 25 % de brillo, quedaron dentro del 3 %.
+- Brillo, contraste y saturación. Se aplican al revisar, reproducir y exportar sin tocar las fotos originales.
+
+**Referencia (rotoscopia)**
+- Carga un video de actuación, una animática o una imagen de storyboard. Se superpone sincronizada con la línea de tiempo, con opacidad y desfase ajustables, y nunca sale en el resultado.
+
 **Línea de tiempo (X-sheet)**
-- Exposiciones por fotograma (en unos, en doses…). El ancho de cada celda es proporcional a su duración.
+- **Regla de tiempo**: arrástrala para recorrer la animación (con sonido). La rueda del ratón desplaza la línea y `Ctrl` + rueda hace zoom.
+- **Notas por fotograma** (diálogo, fonemas A/E/O/M, indicaciones), visibles en la celda y sobre la imagen. Atajo `N`.
+- Duración de cada fotograma (en unos, en doses…). El ancho de cada celda es proporcional a su duración.
 - Selección múltiple, reordenar arrastrando, duplicar, eliminar y deshacer/rehacer ilimitado.
 - Reproducción completa, por rango seleccionado, en bucle, ping-pong y **reproducción corta** (últimos N fotogramas y de vuelta a vivo).
 - **Audio para lip-sync**: forma de onda alineada con los fotogramas, desfase configurable y *scrub*, que reproduce el sonido de cada fotograma al recorrerlo.
@@ -44,7 +58,7 @@ Requisitos: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes. Node 18+
 - **Calculadora de espaciado**: cuántos milímetros mover el objeto en cada fotograma con curvas lineales, ease-in, ease-out y ease-in-out.
 
 **Proyectos y exportación**
-- Varios proyectos guardados automáticamente en el navegador (IndexedDB).
+- Varios proyectos guardados automáticamente en el navegador (IndexedDB). Un indicador muestra «Guardado» en todo momento.
 - Exportar **video MP4 (H.264) o WebM** con audio a la resolución original, 4K, 1080p, 720p o 480p.
 - Exportar una **secuencia de imágenes en ZIP** con las capturas originales, opcionalmente repitiendo cada fotograma según sus exposiciones.
 - Exportar e importar el proyecto completo como `.mesora` (copia de seguridad o traspaso a otro equipo).
@@ -64,12 +78,28 @@ Requisitos: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes. Node 18+
 | `8` / `L`, `P` | Bucle, ping-pong |
 | `O`, `D`, `B` | Papel cebolla, diferencia, parpadeo |
 | `G`, `F`, `Z` | Cuadrícula, focus peaking, lupa |
-| `+` / `−` | Exposiciones del fotograma |
+| `+` / `−` | Duración del fotograma |
+| `N` | Nota del fotograma |
+| `Shift+F` | Pantalla completa |
 | `Supr`, `Ctrl+D` | Eliminar, duplicar |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Deshacer, rehacer |
 | `?` | Todos los atajos |
 
 Las teclas numéricas siguen la disposición del teclado numérico que usan los animadores profesionales.
+
+## MESORA frente a Dragonframe
+
+| | MESORA Studio | Dragonframe |
+| --- | --- | --- |
+| Precio | Gratis | Licencia de pago |
+| Instalación | Ninguna, abre en el navegador (Windows, Mac, Linux, Chromebook, tableta) | Programa de escritorio |
+| Deflicker automático | Integrado | Se suele hacer después con herramientas externas |
+| Papel cebolla, diferencia, parpadeo | Sí | Sí |
+| X-sheet con duración y notas | Sí | Sí |
+| Audio y lip-sync | Forma de onda, scrub y notas de fonemas | Más completo (pistas de diálogo, tablas de fonemas) |
+| Referencia/rotoscopia | Sí | Sí |
+| Control de réflex/sin espejo por USB | No (sí como webcam) | Sí |
+| Control de movimiento e iluminación DMX | No | Sí |
 
 ## Limitaciones honestas
 
@@ -94,6 +124,7 @@ js/exporter.js        exportación de video y secuencias
 js/projectio.js       archivos .mesora
 js/zip.js             lector/escritor ZIP sin dependencias
 js/timing.js          exposiciones, timecode y espaciado (funciones puras)
+js/grading.js         deflicker y corrección de color (funciones puras)
 sw.js                 modo sin conexión
 ```
 

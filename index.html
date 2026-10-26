@@ -28,6 +28,9 @@
     <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 11h14v2H5z"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></symbol>
     <symbol id="i-panel" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-full" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M5 4h14v11l-5 5H5zM14 20v-5h5M8 9h8M8 13h5"/></symbol>
     <symbol id="i-blink" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></symbol>
   </svg>
 
@@ -36,12 +39,14 @@
       <img src="icons/icon.svg" alt="" width="26" height="26">
       <span class="brand-name">MESORA</span><span class="brand-sub">Studio</span>
     </div>
-    <input id="projectName" class="project-name" spellcheck="false" aria-label="Nombre del proyecto">
+    <input id="projectName" class="project-name" spellcheck="false" aria-label="Nombre del proyecto" title="Haz clic para cambiar el nombre del proyecto">
+    <span class="save-state" id="saveState" title="Tu trabajo se guarda automáticamente en este navegador"><svg class="ic"><use href="#i-check"/></svg><span>Guardado</span></span>
     <div class="topbar-actions">
       <button id="btnProjects" class="btn ghost">Proyectos</button>
       <button id="btnImport" class="btn ghost" title="Importar imágenes, audio o un proyecto .mesora">Importar</button>
       <button id="btnExport" class="btn">Exportar</button>
-      <button id="btnHelp" class="btn icon" title="Atajos de teclado (?)" aria-label="Atajos de teclado">?</button>
+      <button id="btnFullscreen" class="btn icon" title="Pantalla completa (Shift+F)" aria-label="Pantalla completa"><svg class="ic"><use href="#i-full"/></svg></button>
+      <button id="btnHelp" class="btn icon" title="Ayuda y atajos de teclado (?)" aria-label="Ayuda">?</button>
       <button id="btnPanel" class="btn icon panel-toggle" title="Mostrar panel" aria-label="Mostrar panel"><svg class="ic"><use href="#i-panel"/></svg></button>
     </div>
     <input type="file" id="fileImport" accept="image/*,audio/*,.mesora,.zip" multiple hidden>
@@ -67,6 +72,7 @@
         <span id="hudMode" class="badge live">EN VIVO</span>
         <span id="hudFrame" class="hud-item"></span>
         <span id="hudTime" class="hud-item mono"></span>
+        <span id="hudNote" class="hud-note" hidden></span>
         <span id="hudFlags" class="hud-flags"></span>
       </div>
       <div class="drop-hint" id="dropHint" hidden>Suelta para importar</div>
@@ -81,8 +87,8 @@
       </nav>
 
       <div class="tabpanel active" data-panel="camera">
-        <section class="group">
-          <h3>Fuente</h3>
+        <details class="group" data-sec="fuente" open>
+          <summary>Fuente</summary>
           <label class="field"><span>Dispositivo</span><select id="camDevice"></select></label>
           <label class="field"><span>Resolución</span>
             <select id="camRes">
@@ -101,10 +107,10 @@
             <label class="check"><input type="checkbox" data-setting="flipH"> Espejo horizontal</label>
             <label class="check"><input type="checkbox" data-setting="flipV"> Voltear vertical</label>
           </div>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Captura</h3>
+        <details class="group" data-sec="captura" open>
+          <summary>Captura</summary>
           <label class="field"><span>Promediado de ruido</span>
             <select data-setting="average" data-type="number">
               <option value="1">Desactivado</option>
@@ -132,22 +138,23 @@
             </select>
           </label>
           <label class="check"><input type="checkbox" data-setting="shutterSound"> Sonido de obturador</label>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Controles de cámara</h3>
+        <details class="group" data-sec="controles-de-camara">
+          <summary>Controles de cámara</summary>
           <p class="muted small">Bloquea exposición, foco y balance de blancos para evitar parpadeo entre fotogramas.</p>
           <div class="row">
             <button id="btnCamLock" class="btn grow">Bloquear automáticos</button>
             <button id="btnCamAuto" class="btn ghost grow">Restablecer</button>
           </div>
           <div id="camControls" class="cam-controls"></div>
-        </section>
+        </details>
       </div>
 
       <div class="tabpanel" data-panel="view">
-        <section class="group">
-          <h3>Papel cebolla</h3>
+        <details class="group" data-sec="papel-cebolla" open>
+          <summary>Papel cebolla</summary>
+          <p class="muted small">Muestra los fotogramas anteriores semitransparentes sobre la cámara para que sepas cuánto mover en el siguiente.</p>
           <label class="check"><input type="checkbox" data-setting="onion.enabled"> Activado <kbd>O</kbd></label>
           <label class="field"><span>Fotogramas anteriores <output data-out="onion.count"></output></span>
             <input type="range" min="1" max="6" step="1" data-setting="onion.count">
@@ -155,10 +162,11 @@
           <label class="field"><span>Opacidad <output data-out="onion.opacity"></output></span>
             <input type="range" min="0.05" max="1" step="0.01" data-setting="onion.opacity">
           </label>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Modo de visualización</h3>
+        <details class="group" data-sec="modo-de-visualizacion" open>
+          <summary>Modo de visualización</summary>
+          <p class="muted small"><b>Diferencia</b> muestra en negro lo que no cambió y resalta lo que se movió. <b>Parpadeo</b> alterna entre la cámara y la última foto.</p>
           <div class="segmented" id="modeSeg">
             <button data-mode="normal">Normal</button>
             <button data-mode="difference">Diferencia <kbd>D</kbd></button>
@@ -170,10 +178,11 @@
           <label class="field"><span>Velocidad de parpadeo <output data-out="blinkRate"></output></span>
             <input type="range" min="1" max="12" step="1" data-setting="blinkRate">
           </label>
-        </section>
+        </details>
 
-        <section class="group" id="chromaGroup">
-          <h3>Croma (pantalla verde)</h3>
+        <details class="group" data-sec="croma-pantalla-verde" id="chromaGroup">
+          <summary>Croma (pantalla verde)</summary>
+          <p class="muted small">Sustituye el fondo verde o azul por una imagen en la vista previa, para componer el plano mientras animas.</p>
           <label class="field inline"><span>Color clave</span><input type="color" data-setting="chroma.color"></label>
           <label class="field"><span>Tolerancia <output data-out="chroma.threshold"></output></span>
             <input type="range" min="0.01" max="0.5" step="0.005" data-setting="chroma.threshold">
@@ -186,10 +195,28 @@
             <button id="btnChromaBgClear" class="btn ghost">Quitar</button>
           </div>
           <input type="file" id="fileChromaBg" accept="image/*" hidden>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Superposiciones</h3>
+        <details class="group" data-sec="color-y-luz" open>
+          <summary>Color y luz</summary>
+          <p class="muted small">Se aplica al revisar, reproducir y exportar. Las fotos originales no se modifican.</p>
+          <label class="check"><input type="checkbox" data-setting="grade.deflicker"> Estabilizar la luz (deflicker)</label>
+          <p class="muted small">Corrige automáticamente los cambios de brillo entre fotos causados por luz natural o por la cámara.</p>
+          <label class="field"><span>Brillo <output data-out="grade.brightness"></output></span>
+            <input type="range" min="0.5" max="1.5" step="0.01" data-setting="grade.brightness">
+          </label>
+          <label class="field"><span>Contraste <output data-out="grade.contrast"></output></span>
+            <input type="range" min="0.5" max="1.5" step="0.01" data-setting="grade.contrast">
+          </label>
+          <label class="field"><span>Saturación <output data-out="grade.saturation"></output></span>
+            <input type="range" min="0" max="2" step="0.01" data-setting="grade.saturation">
+          </label>
+          <button class="btn ghost" id="btnGradeReset">Restablecer color</button>
+        </details>
+
+        <details class="group" data-sec="superposiciones" open>
+          <summary>Superposiciones</summary>
+          <p class="muted small">Ayudas de composición. No aparecen en las fotos ni en el video.</p>
           <label class="field"><span>Cuadrícula <kbd>G</kbd></span>
             <select data-setting="grid">
               <option value="none">Ninguna</option>
@@ -212,10 +239,11 @@
             </select>
           </label>
           <label class="check"><input type="checkbox" data-setting="safe"> Zonas seguras de acción/título</label>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Asistencia de enfoque y exposición</h3>
+        <details class="group" data-sec="asistencia-de-enfoque-y-exposicion">
+          <summary>Asistencia de enfoque y exposición</summary>
+          <p class="muted small"><b>Focus peaking</b> marca en rojo los bordes nítidos. La <b>lupa</b> amplía la zona bajo el cursor a resolución real.</p>
           <label class="check"><input type="checkbox" data-setting="peaking"> Focus peaking <kbd>F</kbd></label>
           <label class="field"><span>Sensibilidad <output data-out="peakingThreshold"></output></span>
             <input type="range" min="20" max="200" step="1" data-setting="peakingThreshold">
@@ -223,12 +251,12 @@
           <label class="check"><input type="checkbox" id="chkLoupe"> Lupa de enfoque 1:1 <kbd>Z</kbd></label>
           <label class="check"><input type="checkbox" data-setting="histogram"> Histograma</label>
           <canvas id="histogram" class="histogram" width="288" height="96" hidden></canvas>
-        </section>
+        </details>
       </div>
 
       <div class="tabpanel" data-panel="guides">
-        <section class="group">
-          <h3>Capa de guías</h3>
+        <details class="group" data-sec="capa-de-guias" open>
+          <summary>Capa de guías</summary>
           <p class="muted small">Dibuja trayectorias, arcos y marcas de posición sobre la vista. Las guías no aparecen en los fotogramas capturados.</p>
           <div class="row">
             <button id="btnDraw" class="btn grow">Dibujar guías</button>
@@ -242,12 +270,30 @@
             <button id="btnGuideUndo" class="btn ghost grow">Deshacer trazo</button>
             <button id="btnGuideClear" class="btn ghost grow">Borrar todo</button>
           </div>
-        </section>
+        </details>
+
+        <details class="group" data-sec="referencia-rotoscopia" open>
+          <summary>Referencia (rotoscopia)</summary>
+          <p class="muted small">Carga un video o una imagen de referencia (actuación, animática, storyboard). Se superpone sincronizado con la línea de tiempo y nunca sale en el resultado.</p>
+          <p class="small" id="refInfo">Sin referencia</p>
+          <div class="row">
+            <button id="btnRef" class="btn grow">Cargar video o imagen…</button>
+            <button id="btnRefClear" class="btn ghost">Quitar</button>
+          </div>
+          <label class="check"><input type="checkbox" data-setting="reference.visible"> Mostrar referencia</label>
+          <label class="field"><span>Opacidad <output data-out="reference.opacity"></output></span>
+            <input type="range" min="0.05" max="1" step="0.01" data-setting="reference.opacity">
+          </label>
+          <label class="field"><span>Empieza en el cuadro</span>
+            <input type="number" min="0" step="1" data-setting="reference.offset" data-type="number">
+          </label>
+          <input type="file" id="fileRef" accept="video/*,image/*" hidden>
+        </details>
       </div>
 
       <div class="tabpanel" data-panel="tools">
-        <section class="group">
-          <h3>Proyecto</h3>
+        <details class="group" data-sec="proyecto" open>
+          <summary>Proyecto</summary>
           <label class="field"><span>Velocidad (fotogramas por segundo)</span>
             <select id="fpsSelect">
               <option value="6">6 fps</option>
@@ -261,10 +307,10 @@
             </select>
           </label>
           <p class="muted small" id="projectInfo"></p>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Audio y lip-sync</h3>
+        <details class="group" data-sec="audio-y-lip-sync" open>
+          <summary>Audio y lip-sync</summary>
           <p class="muted small" id="audioInfo">Sin pista de audio. Al moverte por los fotogramas escucharás el fragmento correspondiente.</p>
           <div class="row">
             <button id="btnAudio" class="btn grow">Cargar audio…</button>
@@ -274,10 +320,11 @@
             <input type="number" id="audioOffset" min="0" step="1" value="0">
           </label>
           <input type="file" id="fileAudio" accept="audio/*" hidden>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Intervalómetro (time-lapse)</h3>
+        <details class="group" data-sec="intervalometro-time-lapse">
+          <summary>Intervalómetro (time-lapse)</summary>
+          <p class="muted small">Toma una foto automáticamente cada cierto tiempo: ideal para plantas, nubes o construcciones.</p>
           <label class="field"><span>Intervalo (segundos)</span>
             <input type="number" min="1" max="3600" step="1" data-setting="timelapseInterval" data-type="number">
           </label>
@@ -285,10 +332,10 @@
             <button id="btnTimelapse" class="btn grow">Iniciar intervalómetro</button>
           </div>
           <p class="muted small" id="timelapseInfo"></p>
-        </section>
+        </details>
 
-        <section class="group">
-          <h3>Calculadora de espaciado</h3>
+        <details class="group" data-sec="calculadora-de-espaciado">
+          <summary>Calculadora de espaciado</summary>
           <p class="muted small">Calcula cuánto mover el objeto en cada fotograma para un movimiento con aceleración.</p>
           <div class="grid2">
             <label class="field"><span>Distancia (mm)</span><input type="number" id="spDist" value="100" min="0" step="1"></label>
@@ -307,7 +354,7 @@
           </label>
           <canvas id="spChart" class="sp-chart" width="288" height="64"></canvas>
           <div class="sp-table-wrap"><table class="sp-table" id="spTable"></table></div>
-        </section>
+        </details>
       </div>
     </aside>
   </main>
@@ -328,12 +375,16 @@
         <input type="number" class="mini-num" min="2" max="60" data-setting="shortPlay" data-type="number" title="Fotogramas de la reproducción corta">
       </div>
       <div class="tgroup">
-        <span class="label">Exposición</span>
-        <button class="btn icon" id="tHoldMinus" title="Menos exposiciones (−)" aria-label="Menos exposiciones"><svg class="ic"><use href="#i-minus"/></svg></button>
-        <span class="hold-val mono" id="holdVal">×1</span>
-        <button class="btn icon" id="tHoldPlus" title="Más exposiciones (+)" aria-label="Más exposiciones"><svg class="ic"><use href="#i-plus"/></svg></button>
+        <span class="label" title="Cuántos cuadros de video dura el fotograma seleccionado (×2 = animar «en doses»)">Duración</span>
+        <button class="btn icon" id="tHoldMinus" title="Acortar: dura un cuadro menos (−)" aria-label="Acortar fotograma"><svg class="ic"><use href="#i-minus"/></svg></button>
+        <span class="hold-val mono" id="holdVal" title="Cuadros que dura el fotograma seleccionado">×1</span>
+        <button class="btn icon" id="tHoldPlus" title="Alargar: dura un cuadro más (+)" aria-label="Alargar fotograma"><svg class="ic"><use href="#i-plus"/></svg></button>
         <button class="btn icon" id="tDup" title="Duplicar (Ctrl+D)" aria-label="Duplicar"><svg class="ic"><use href="#i-dup"/></svg></button>
         <button class="btn icon" id="tDel" title="Eliminar (Supr)" aria-label="Eliminar"><svg class="ic"><use href="#i-trash"/></svg></button>
+      </div>
+      <div class="tgroup note-group">
+        <svg class="ic muted"><use href="#i-note"/></svg>
+        <input id="frameNote" class="note-input" maxlength="80" placeholder="Nota o fonema (N)" title="Nota del fotograma: diálogo, fonema (A, E, O, M…) o indicación. Atajo: N" aria-label="Nota del fotograma">
       </div>
       <div class="tgroup">
         <button class="btn icon" id="tUndo" title="Deshacer (Ctrl+Z)" aria-label="Deshacer"><svg class="ic"><use href="#i-undo"/></svg></button>
@@ -348,6 +399,7 @@
       </button>
     </div>
     <div class="timeline-wrap" id="timelineWrap">
+      <div class="ruler" id="ruler" title="Arrastra para recorrer la animación"></div>
       <div class="timeline" id="timeline"></div>
       <canvas id="waveform" class="waveform" height="44" hidden></canvas>
     </div>
@@ -408,12 +460,14 @@
             </label>
           </div>
           <label class="check"><input type="checkbox" id="exAudio" checked> Incluir audio</label>
+          <label class="check"><input type="checkbox" id="exGrade" checked> Aplicar color y estabilización de luz</label>
           <p class="muted small">La exportación de video se graba en tiempo real: mantén esta pestaña visible.</p>
           <button class="btn primary" id="btnExportVideo">Exportar video</button>
         </section>
         <section class="group">
           <h3>Secuencia de imágenes (ZIP)</h3>
-          <label class="check"><input type="checkbox" id="exExpand" checked> Repetir fotogramas según sus exposiciones</label>
+          <label class="check"><input type="checkbox" id="exExpand" checked> Repetir cada fotograma según su duración</label>
+          <label class="check"><input type="checkbox" id="exGradeZip"> Aplicar color y estabilización de luz (si no, se copian las fotos originales)</label>
           <button class="btn" id="btnExportZip">Exportar secuencia</button>
         </section>
         <section class="group">
@@ -433,8 +487,13 @@
 
   <div class="modal" id="modalHelp" hidden>
     <div class="modal-card wide">
-      <header><h2>Atajos de teclado</h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
-      <div class="modal-body help-grid">
+      <header><h2>Ayuda y atajos de teclado</h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
+      <div class="modal-body">
+        <div class="help-top">
+          <p class="muted">Rueda del ratón: desplazar la línea de tiempo · <kbd>Ctrl</kbd> + rueda: zoom · arrastra la regla de tiempo para recorrer la animación · arrastra fotogramas para reordenarlos.</p>
+          <button class="btn" id="btnShowWelcome">Ver guía de inicio</button>
+        </div>
+      <div class="help-grid">
         <div>
           <h3>Captura</h3>
           <dl>
@@ -462,8 +521,9 @@
           <h3>Edición</h3>
           <dl>
             <dt><kbd>Supr</kbd></dt><dd>Eliminar selección</dd>
+            <dt><kbd>N</kbd></dt><dd>Escribir nota del fotograma</dd>
             <dt><kbd>Ctrl</kbd>+<kbd>D</kbd></dt><dd>Duplicar selección</dd>
-            <dt><kbd>+</kbd> / <kbd>−</kbd></dt><dd>Exposiciones del fotograma</dd>
+            <dt><kbd>+</kbd> / <kbd>−</kbd></dt><dd>Duración del fotograma</dd>
             <dt><kbd>Ctrl</kbd>+<kbd>A</kbd></dt><dd>Seleccionar todo</dd>
             <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Deshacer</dd>
             <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></dt><dd>Rehacer</dd>
@@ -478,8 +538,30 @@
             <dt><kbd>G</kbd></dt><dd>Cambiar cuadrícula</dd>
             <dt><kbd>F</kbd></dt><dd>Focus peaking</dd>
             <dt><kbd>Z</kbd></dt><dd>Lupa de enfoque</dd>
+            <dt><kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Pantalla completa</dd>
             <dt><kbd>?</kbd></dt><dd>Esta ayuda</dd>
           </dl>
+        </div>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modalWelcome" hidden>
+    <div class="modal-card wide welcome">
+      <header><h2>Bienvenido a MESORA Studio</h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
+      <div class="modal-body">
+        <p class="lead">Haz tu primera animación stop motion en cuatro pasos:</p>
+        <ol class="steps">
+          <li><span class="step-n">1</span><div><b>Conecta tu cámara</b><p>Webcam, cámara USB o tu réflex en modo webcam. Fíjala con un trípode: la cámara no debe moverse.</p></div></li>
+          <li><span class="step-n">2</span><div><b>Captura un fotograma</b><p>Pulsa <b>Capturar</b> o la tecla <kbd>Enter</kbd>. Mueve un poquito tu personaje y vuelve a capturar.</p></div></li>
+          <li><span class="step-n">3</span><div><b>Guíate con el papel cebolla</b><p>Verás la foto anterior semitransparente sobre la cámara para calcular el siguiente movimiento.</p></div></li>
+          <li><span class="step-n">4</span><div><b>Reproduce y exporta</b><p>Pulsa <kbd>Espacio</kbd> para ver tu animación y <b>Exportar</b> para crear el video MP4.</p></div></li>
+        </ol>
+        <p class="muted small">Consejos: entre 8 y 12 fotos por segundo de animación es lo habitual. Usa luz artificial constante y cierra las cortinas para evitar parpadeos. Todo se guarda automáticamente en este navegador.</p>
+        <div class="row welcome-actions">
+          <button class="btn ghost" id="btnWelcomeHelp">Ver atajos de teclado</button>
+          <button class="btn primary" id="btnWelcomeStart">Empezar a animar</button>
         </div>
       </div>
     </div>

@@ -13,7 +13,7 @@ export async function exportProjectFile(project, onProgress) {
     if (rec) files.push({ name: `frames/${ids[i]}.${extForType(rec.full.type)}`, data: rec.full });
     onProgress?.((i + 1) / ids.length / 2);
   }
-  for (const blobId of [project.audio?.blobId, project.settings?.chroma?.bgBlobId]) {
+  for (const blobId of [project.audio?.blobId, project.settings?.chroma?.bgBlobId, project.settings?.reference?.blobId]) {
     if (!blobId) continue;
     const rec = await db.get('blobs', blobId);
     if (rec) files.push({ name: `blobs/${blobId}__${rec.name || 'archivo'}`, data: rec.blob });
@@ -38,7 +38,11 @@ export async function importProjectFile(file, store, onProgress) {
     frames: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    settings: { ...(src.settings || {}), chroma: { ...(src.settings?.chroma || {}), bgBlobId: null } },
+    settings: {
+      ...(src.settings || {}),
+      chroma: { ...(src.settings?.chroma || {}), bgBlobId: null },
+      reference: { ...(src.settings?.reference || {}), blobId: null },
+    },
     audio: null,
   };
 
@@ -56,7 +60,9 @@ export async function importProjectFile(file, store, onProgress) {
     idMap.set(unique[i], (await store.addFromBlob(project.id, blob)).id);
     onProgress?.((i + 1) / unique.length);
   }
-  project.frames = src.frames.filter((f) => idMap.has(f.id)).map((f) => ({ key: uid(), id: idMap.get(f.id), hold: f.hold || 1 }));
+  project.frames = src.frames
+    .filter((f) => idMap.has(f.id))
+    .map((f) => ({ key: uid(), id: idMap.get(f.id), hold: f.hold || 1, ...(f.note ? { note: f.note } : {}) }));
 
   const findBlob = (oldId) => entries.find((e) => e.name.startsWith(`blobs/${oldId}__`));
   const copyBlob = async (oldId) => {
@@ -71,6 +77,8 @@ export async function importProjectFile(file, store, onProgress) {
   if (audioId) project.audio = { ...src.audio, blobId: audioId };
   const bgId = await copyBlob(src.settings?.chroma?.bgBlobId);
   if (bgId) project.settings.chroma.bgBlobId = bgId;
+  const refId = await copyBlob(src.settings?.reference?.blobId);
+  if (refId) project.settings.reference.blobId = refId;
 
   await db.put('projects', project);
   return project;

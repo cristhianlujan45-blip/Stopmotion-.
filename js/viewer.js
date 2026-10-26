@@ -75,12 +75,13 @@ export class Viewer {
     this.ctx.restore();
   }
 
-  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over' } = {}) {
+  draw(src, sw, sh, { flipH = false, flipV = false, alpha = 1, op = 'source-over', filter = 'none' } = {}) {
     const { ctx, W, H } = this;
     const f = fitContain(sw, sh, W, H);
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = op;
+    if (filter !== 'none') ctx.filter = filter;
     if (flipH || flipV) {
       ctx.translate(flipH ? W : 0, flipV ? H : 0);
       ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
