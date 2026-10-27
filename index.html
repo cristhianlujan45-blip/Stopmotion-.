@@ -62,7 +62,7 @@
       <button id="btnHelp" class="btn icon" title="Ayuda y atajos de teclado (?)" aria-label="Ayuda">?</button>
       <button id="btnPanel" class="btn icon panel-toggle" title="Mostrar panel" aria-label="Mostrar panel"><svg class="ic"><use href="#i-panel"/></svg></button>
     </div>
-    <input type="file" id="fileImport" accept="image/*,audio/*,.mesora,.zip" multiple hidden>
+    <input type="file" id="fileImport" accept="image/*,audio/*,.mesora,.zip,.json" multiple hidden>
   </header>
 
   <main class="workspace">
@@ -91,6 +91,15 @@
         <span id="hudFlags" class="hud-flags"></span>
       </div>
       <div class="drop-hint" id="dropHint" hidden>Suelta para importar</div>
+      <div class="coach" id="coach" hidden role="status" aria-live="polite">
+        <div class="coach-head"><span class="muted small" id="coachStep"></span><button class="btn icon close" id="btnCoachClose" title="Salir del modo aprendizaje" aria-label="Salir del modo aprendizaje">×</button></div>
+        <b id="coachTitle"></b>
+        <p id="coachText"></p>
+        <div class="row coach-actions">
+          <button class="btn small ghost" id="btnCoachSkip">Saltar este paso</button>
+          <button class="btn small primary" id="btnCoachNext">Siguiente</button>
+        </div>
+      </div>
     </section>
 
     <aside class="sidepanel" id="sidepanel">
@@ -373,6 +382,17 @@
           </div>
         </details>
 
+
+        <details class="group desktop-app-only" data-sec="copia-de-seguridad" open>
+          <summary>Copia de seguridad</summary>
+          <p class="muted small">Cada 10 minutos MESORA copia todas tus producciones en otra carpeta: un disco externo o una carpeta de Dropbox, Google Drive, OneDrive o iCloud. Solo añade y actualiza: nunca borra nada de la copia.</p>
+          <p class="small" id="backupInfo">Sin copia de seguridad.</p>
+          <div class="row wrap">
+            <button class="btn grow" id="btnBackupChoose">Elegir carpeta…</button>
+            <button class="btn" id="btnBackupNow" hidden>Copiar ahora</button>
+            <button class="btn ghost" id="btnBackupOff" hidden>Desactivar</button>
+          </div>
+        </details>
 
         <details class="group desktop-app-only" data-sec="movil-como-mando">
           <summary>Móvil como mando</summary>
@@ -697,6 +717,7 @@
           <h3>Otros</h3>
           <div class="row wrap">
             <button class="btn" id="btnExportFrame">Fotograma actual (PNG)</button>
+            <button class="btn" id="btnExportReview" title="Un solo archivo HTML para que otra persona vea la toma en su navegador y te devuelva notas por fotograma">Paquete de revisión</button>
             <button class="btn" id="btnExportWav" title="La mezcla de todas las pistas que suenan, del mismo tramo que el video">Sonido (WAV)</button>
             <button class="btn" id="btnExportProject" title="Un solo archivo con todo el proyecto, para pasarlo a otro equipo o a la versión web o Android">Copia del proyecto (.mesora)</button>
           </div>
@@ -715,7 +736,10 @@
       <div class="modal-body">
         <div class="help-top">
           <p class="muted">Rueda del ratón: desplazar la línea de tiempo · <kbd>Ctrl</kbd> + rueda: zoom · arrastra la regla de tiempo para recorrer la animación · arrastra fotogramas para reordenarlos.</p>
-          <button class="btn" id="btnShowWelcome">Ver guía de inicio</button>
+          <div class="row">
+            <button class="btn" id="btnShowWelcome">Ver guía de inicio</button>
+            <button class="btn" id="btnLearn" title="MESORA te guía paso a paso en tu primera animación">Modo aprendizaje</button>
+          </div>
         </div>
         <div class="help-top" id="appInfo" hidden>
           <p class="muted small" id="appVersion"></p>
@@ -744,6 +768,7 @@
         <p class="muted small">Consejos: entre 8 y 12 fotos por segundo de animación es lo habitual. Usa luz artificial constante y cierra las cortinas para evitar parpadeos. <span id="welcomeStorage">Todo se guarda automáticamente en este navegador.</span></p>
         <div class="row welcome-actions">
           <button class="btn ghost" id="btnWelcomeHelp">Ver atajos de teclado</button>
+          <button class="btn" id="btnWelcomeLearn" title="MESORA te guía paso a paso en tu primera animación">Aprender paso a paso</button>
           <button class="btn primary" id="btnWelcomeStart">Empezar a animar</button>
         </div>
       </div>

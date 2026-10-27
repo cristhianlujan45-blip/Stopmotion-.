@@ -79,3 +79,18 @@ test('todos los archivos de un proyecto se copian al empaquetar o migrar', async
   assert.equal(p.settings.chroma.bgBlobId, 'new-bg');
   assert.deepEqual(p.settings.lipsync.characters[0].mouths, { A: 'new-m1' });
 });
+
+test('modo aprendizaje: avanza solo cuando el paso se cumple', async () => {
+  const { LEARN_STEPS, currentStep } = await import('../js/learn.js');
+  const ctx = { cameraReady: false, frames: 0, played: false, exportOpened: false };
+  assert.equal(currentStep(0, ctx), 0);
+  ctx.cameraReady = true;
+  assert.equal(LEARN_STEPS[currentStep(0, ctx)].id, 'first');
+  ctx.frames = 6;
+  assert.equal(LEARN_STEPS[currentStep(0, ctx)].id, 'onion', 'los pasos que solo explican esperan a «Siguiente»');
+  assert.equal(LEARN_STEPS[currentStep(4, ctx)].id, 'play');
+  ctx.played = true;
+  assert.equal(LEARN_STEPS[currentStep(4, ctx)].id, 'speed');
+  ctx.exportOpened = true;
+  assert.equal(currentStep(6, ctx), LEARN_STEPS.length);
+});

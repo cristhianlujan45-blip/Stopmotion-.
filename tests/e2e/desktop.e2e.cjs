@@ -501,6 +501,92 @@ const listTakes = () => {
     check(await fetch(`${api}/api/state`, { headers: rh }).then(() => false, () => true), 'al desactivarlo, el mando deja de responder');
   }
 
+  // 16) Copia de seguridad automática en otra carpeta (el diálogo se sustituye en la prueba).
+  {
+    const backupDir = path.join(work, 'Disco externo');
+    fs.mkdirSync(backupDir);
+    await app.evaluate(({ dialog }, dir) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, backupDir);
+    await win.click('.tab[data-tab="tools"]');
+    await win.click('#btnBackupChoose');
+    await win.waitForFunction(() => /última:/.test(document.querySelector('#backupInfo').textContent), null, { timeout: 30000 });
+    const copy = path.join(backupDir, 'MESORA (copia)');
+    const take = listTakes().find((t) => t.prod === 'Asistente E2E');
+    const rel = path.relative(libDir, take.dir);
+    check(fs.readdirSync(path.join(copy, rel, 'capture', 'X1')).length === take.files.length, `la copia tiene las ${take.files.length} fotos de la toma`);
+    check(fs.existsSync(path.join(copy, rel, 'edl.json')) && fs.existsSync(path.join(copy, 'LEEME.txt')), 'la copia tiene el timeline y un LEEME');
+    check(!fs.existsSync(path.join(copy, 'Asistente E2E', 'exports')), 'las películas exportadas no se copian');
+    await win.click('#btnBackupNow');
+    await win.waitForFunction(() => / 0 de \d+ archivos/.test(document.querySelector('#backupInfo').textContent), null, { timeout: 30000 });
+    log('OK «Copiar ahora» sin cambios no vuelve a copiar nada');
+    await win.click('#btnBackupOff');
+    await win.waitForFunction(() => document.querySelector('#btnBackupNow').hidden);
+    check(fs.existsSync(path.join(copy, rel, 'edl.json')), 'desactivar no borra la copia');
+  }
+
+  // 17) Paquete de revisión: HTML para otra persona; sus notas vuelven a los fotogramas.
+  {
+    await win.click('#btnExport');
+    await win.click('#btnExportReview');
+    await win.waitForFunction(() => [...document.querySelectorAll('.toast')].some((t) => t.textContent.startsWith('Paquete de revisión listo')), null, { timeout: 30000 });
+    await win.keyboard.press('Escape');
+    const exp = path.join(libDir, 'Asistente E2E', 'exports');
+    const html = path.join(exp, fs.readdirSync(exp).find((n) => n.endsWith('_revision.html')));
+    log(`paquete de revisión: ${(fs.statSync(html).size / 1024).toFixed(0)} KB`);
+    const [rev] = await Promise.all([
+      app.waitForEvent('window'),
+      app.evaluate(({ BrowserWindow }, file) => { new BrowserWindow({ width: 1100, height: 760, show: true }).loadFile(file); }, html),
+    ]);
+    await rev.waitForSelector('#strip img');
+    const nFrames = await win.evaluate(() => window.mesora.state.project.frames.length);
+    check(await rev.$$eval('#strip img', (els) => els.length) === nFrames, `el paquete muestra los ${nFrames} fotogramas`);
+    check(await rev.evaluate(() => !!document.querySelector('#snd').src), 'el paquete lleva el sonido');
+    await rev.click('#strip img:nth-child(2)');
+    await rev.fill('#note', 'el brazo salta');
+    await rev.click('#strip img:nth-child(4)');
+    await rev.fill('#note', 'más luz aquí');
+    await rev.fill('#reviewer', 'Dirección');
+    await rev.fill('#general', 'Buen ritmo');
+    await rev.evaluate(() => {
+      const make = URL.createObjectURL;
+      URL.createObjectURL = (blob) => { window.notesBlob = blob; return make(blob); };
+      HTMLAnchorElement.prototype.click = () => {};
+    });
+    await rev.click('#save');
+    const notesJson = await rev.evaluate(() => window.notesBlob.text());
+    await rev.close();
+    await win.setInputFiles('#fileImport', { name: 'notas-revision.json', mimeType: 'application/json', buffer: Buffer.from(notesJson) });
+    await win.waitForSelector('#modalList:not([hidden]) #modalListItems li');
+    const notes = await win.evaluate(() => window.mesora.state.project.frames.map((f) => f.note || ''));
+    check(notes[1] === 'Dirección: el brazo salta' && notes[3] === 'Dirección: más luz aquí', `las notas de revisión vuelven a sus fotogramas: ${notes[1]} | ${notes[3]}`);
+    check((await win.textContent('#modalListHint')).includes('Buen ritmo'), 'se muestra el comentario general');
+    await win.keyboard.press('Escape');
+    await win.keyboard.press('Control+z');
+    await win.waitForFunction(() => !window.mesora.state.project.frames[1].note);
+    log('OK las notas importadas se pueden deshacer');
+  }
+
+  // 18) Modo aprendizaje: avanza al hacer cada cosa.
+  {
+    await win.click('#btnHelp');
+    await win.click('#btnLearn');
+    await win.waitForSelector('#coach:not([hidden])');
+    const title = () => win.textContent('#coachTitle');
+    check(await title() === 'Fíjate en el papel cebolla', 'con cámara y fotos hechas, el tutorial salta a lo que falta');
+    await win.click('#btnCoachNext');
+    await win.waitForFunction(() => document.querySelector('#coachTitle').textContent === 'Mira tu animación');
+    check(await win.evaluate(() => document.querySelector('#tPlay').classList.contains('coach-target')), 'el tutorial señala el botón de reproducir');
+    await win.click('#tPlay');
+    await win.waitForFunction(() => document.querySelector('#coachTitle').textContent === '¿Va muy rápido o muy lento?', null, { timeout: 5000 });
+    log('OK al reproducir, el tutorial pasa al siguiente paso');
+    await win.keyboard.press('Escape');
+    await win.click('#btnCoachNext');
+    await win.click('#btnExport');
+    await win.waitForFunction(() => document.querySelector('#coachStep').textContent === '¡Hecho!', null, { timeout: 5000 });
+    await win.keyboard.press('Escape');
+    await win.click('#btnCoachNext');
+    check(await win.evaluate(() => document.querySelector('#coach').hidden && !document.querySelector('.coach-target')), 'al terminar, el tutorial se cierra');
+  }
+
   check(errors.length === 0, `sin errores en la consola${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   await app.close();
   fs.rmSync(work, { recursive: true, force: true });

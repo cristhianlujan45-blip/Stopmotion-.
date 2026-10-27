@@ -333,8 +333,10 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   height: 40px; padding: 0 18px 0 12px;
   background: var(--accent); color: #fff; border: 0; border-radius: 20px;
   font-weight: 700; font-size: 14px; cursor: pointer;
-  box-shadow: 0 4px 14px rgba(255,77,61,.35);
+  box-shadow: 0 4px 14px rgba(255,77,61,.35), -14px 0 14px -4px var(--panel);
   flex: none;
+  /* Always visible, even when the bar has to scroll on narrow windows. */
+  position: sticky; right: 0; z-index: 2; margin-left: auto;
 }
 .capture-btn:hover { background: #ff6152; }
 .capture-btn:active { transform: scale(.97); }
@@ -606,3 +608,13 @@ details.menu > summary::-webkit-details-marker { display: none; }
 .hud-mouth b { padding-left: 4px; }
 .remote-qr { display: block; width: 200px; height: 200px; margin: 8px auto; background: #fff; border-radius: 8px; }
 code.selectable { user-select: all; word-break: break-all; font-size: 11.5px; }
+.error-text { color: #ff8a80; }
+
+/* Learning mode */
+.coach { position: absolute; left: 16px; bottom: 16px; z-index: 6; width: min(340px, calc(100% - 32px)); background: rgba(21,23,28,.96); border: 1px solid var(--sel); border-radius: 10px; padding: 10px 12px 12px; box-shadow: 0 12px 32px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 6px; }
+.coach-head { display: flex; justify-content: space-between; align-items: center; }
+.coach p { margin: 0; color: #cfd3dc; font-size: 13px; line-height: 1.45; }
+.coach b { font-size: 15px; }
+.coach-actions { justify-content: flex-end; gap: 6px; }
+.coach-target { position: relative; z-index: 5; box-shadow: 0 0 0 3px var(--sel), 0 0 0 7px rgba(59,130,246,.35) !important; animation: coach-pulse 1.4s ease-in-out infinite; }
+@keyframes coach-pulse { 50% { box-shadow: 0 0 0 3px var(--sel), 0 0 0 11px rgba(59,130,246,.12) !important; } }

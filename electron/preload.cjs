@@ -34,6 +34,13 @@ contextBridge.exposeInMainWorld('mesoraDesktop', {
     onAction: (cb) => ipcRenderer.on('remote:action', (_e, action) => cb(action)),
     onActive: (cb) => ipcRenderer.on('remote:active', (_e, active) => cb(active)),
   },
+  backup: {
+    status: () => ipcRenderer.invoke('backup:status'),
+    run: () => ipcRenderer.invoke('backup:run'),
+    choose: () => ipcRenderer.invoke('backup:choose'),
+    disable: () => ipcRenderer.invoke('backup:disable'),
+    onStatus: (cb) => ipcRenderer.on('backup:status', (_e, s) => cb(s)),
+  },
   library: {
     call: (method, ...args) => ipcRenderer.invoke('library', method, ...args),
     root: () => ipcRenderer.invoke('library:root'),

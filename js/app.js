@@ -9,6 +9,8 @@ import { FrameStore, isRawFile } from './framestore.js';
 import { History } from './history.js';
 import { AudioMix, TRACK_COLORS, encodeWav, exposureLevels } from './audio.js';
 import { MOUTHS, mouthFor, mouthLabel, draftMouths } from './lipsync.js';
+import { buildReviewPackage, parseReviewNotes } from './review.js';
+import { LEARN_STEPS, currentStep } from './learn.js';
 import { createViewer } from './viewer-gl.js';
 import { ACTIONS, Keymap, comboOf, comboLabel } from './shortcuts.js';
 import { XSheetView, xsheetToCSV, xsheetFromCSV, xsheetTableHTML } from './xsheet.js';
@@ -430,6 +432,7 @@ function startPlayback({ start = 0, end = frames().length, loop = S().loop, ping
   });
   playAudioFrom(0);
   for (let k = 0; k < Math.min(24, exposures.length); k++) store.load(fr[exposures[k]].id);
+  coach.played = true;
   refresh();
 }
 
@@ -1038,6 +1041,38 @@ async function reviewTake() {
   showList('Revisión de la toma', found.length
     ? `${found.length} ${found.length === 1 ? 'fotograma puede tener' : 'fotogramas pueden tener'} un problema. No se ha cambiado nada: «Ver» lo muestra en modo diferencia para que decidas.`
     : 'No se encontraron problemas entre fotogramas consecutivos.', items);
+}
+
+// ---------------------------------------------------------------- automatic backup (desktop)
+
+const backupApi = window.mesoraDesktop?.backup;
+let backupErrorShown = 0;
+
+function updateBackupUI(st) {
+  const info = $('#backupInfo');
+  $('#btnBackupChoose').textContent = st.folder ? 'Cambiar carpeta…' : 'Elegir carpeta…';
+  $('#btnBackupNow').hidden = !st.folder;
+  $('#btnBackupOff').hidden = !st.folder;
+  $('#btnBackupNow').disabled = st.running;
+  const l = st.last;
+  info.classList.toggle('error-text', !!l?.error && !st.running);
+  if (!st.folder) info.textContent = 'Sin copia de seguridad. Elige una carpeta para activarla.';
+  else if (st.running) info.textContent = `Copiando en ${st.target}…`;
+  else if (l?.error) info.textContent = `La última copia falló (${formatDate(l.at)}): ${l.error}`;
+  else if (l) info.textContent = `Copia en ${st.target} · última: ${formatDate(l.at)}, ${l.copied} de ${l.files} archivos nuevos o cambiados.`;
+  else info.textContent = `Copia en ${st.target} · la primera se hará en un momento.`;
+  if (l?.error && !st.running && backupErrorShown !== l.at) {
+    backupErrorShown = l.at;
+    toast(`No se pudo hacer la copia de seguridad: ${l.error}`, 'error', 8000);
+  }
+}
+
+async function backupAction(fn) {
+  try {
+    updateBackupUI(await fn());
+  } catch (err) {
+    toast(err.message, 'error', 7000);
+  }
 }
 
 // ---------------------------------------------------------------- phone remote / local API (desktop)
@@ -2071,10 +2106,16 @@ async function importFiles(fileList) {
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const audios = files.filter((f) => f.type.startsWith('audio/'));
   const projects = files.filter((f) => /\.(mesora|zip)$/i.test(f.name));
+  const notes = files.filter((f) => /\.json$/i.test(f.name));
+  for (const f of notes) {
+    const r = parseReviewNotes(await f.text());
+    if (r) applyReviewNotes(r);
+    else toast(`«${f.name}» no es un archivo de notas de revisión de MESORA`, 'warn', 6000);
+  }
   for (const f of projects) await importProject(f);
   for (const a of audios) await addAudioTrack(a);
   if (images.length) await importImages(images);
-  if (!images.length && !audios.length && !projects.length) toast('No se reconoció ningún archivo compatible', 'warn');
+  if (!images.length && !audios.length && !projects.length && !notes.length) toast('No se reconoció ningún archivo compatible', 'warn');
 }
 
 async function importImages(images) {
@@ -2618,6 +2659,84 @@ async function exportWav() {
   await deliver(new Blob([wav], { type: 'audio/wav' }), `${safeFileName(p.name)}.wav`, 'Sonido exportado');
 }
 
+/** One HTML file with the take for someone to review in any browser and send notes back. */
+async function exportReview() {
+  const fr = frames();
+  if (!fr.length) { toast('No hay fotogramas para revisar', 'warn'); return; }
+  const p = P();
+  const [a, b] = exportRange(exportApi && p.storage === 'disk' ? '#dxRange' : undefined);
+  const sel = fr.slice(a, b);
+  setExportBusy(true);
+  try {
+    let audioWav = null;
+    if (audio.ready) {
+      showProgress('Mezclando el sonido…', 0);
+      const mix = await audio.mixdown(exposureStart(fr, a) / p.fps, totalExposures(sel) / p.fps, 22050);
+      const l = mix.getChannelData(0), r = mix.getChannelData(1);
+      const mono = new Float32Array(l.length);
+      for (let i = 0; i < l.length; i++) mono[i] = (l[i] + r[i]) / 2;
+      audioWav = encodeWav([mono], 22050);
+    }
+    const blob = await buildReviewPackage({
+      project: p, frames: sel, audioWav,
+      decode: (id) => store.decode(id, 'preview'),
+      onProgress: (v) => showProgress(`Preparando el paquete de revisión… ${Math.round(v * 100)}%`, v),
+    });
+    await deliver(blob, `${safeFileName(p.name)}_revision.html`, 'Paquete de revisión listo: envíalo y pide que te devuelvan el archivo de notas');
+  } catch (err) {
+    toast(`No se pudo crear el paquete de revisión: ${err.message}`, 'error', 6000);
+  } finally {
+    setExportBusy(false);
+    hideProgress();
+  }
+}
+
+/** Puts the notes written in a review package on their frames (one undoable change). */
+function applyReviewNotes(r) {
+  const p = P();
+  const fr = frames();
+  const found = [];
+  for (const n of r.notes) {
+    let i = fr.findIndex((f) => f.key === n.key);
+    if (i < 0) i = fr.findIndex((f) => f.id === n.id);
+    if (i >= 0) found.push({ n, i });
+  }
+  if (!found.length) {
+    toast(r.takeId && r.takeId !== p.id
+      ? `Estas notas son de otra toma («${r.title}»). Ábrela y vuelve a importarlas.`
+      : 'Ninguna nota coincide con los fotogramas de esta toma', 'warn', 7000);
+    return;
+  }
+  const who = r.reviewer ? `${r.reviewer}: ` : 'Revisión: ';
+  commit((frs) => {
+    for (const { n, i } of found) {
+      const text = `${who}${n.text}`;
+      const cur = frs[i].note;
+      if (cur?.includes(text)) continue;
+      frs[i].note = cur ? `${cur} · ${text}` : text;
+    }
+  });
+  const items = found.map(({ n, i }) => {
+    const li = document.createElement('li');
+    li.className = 'project-item';
+    li.innerHTML = `
+      <div class="thumb"></div>
+      <div class="info"><div class="name"></div><div class="sub"></div></div>
+      <div class="actions"><button class="btn" data-act="go">Ir</button></div>`;
+    li.querySelector('.name').textContent = `Fotograma ${i + 1}`;
+    li.querySelector('.sub').textContent = n.text;
+    store.thumbUrl(fr[i].id).then((url) => { if (url) li.querySelector('.thumb').style.backgroundImage = `url("${url}")`; });
+    li.querySelector('[data-act="go"]').addEventListener('click', () => { closeModal($('#modalList')); setPlayhead(i); });
+    return li;
+  });
+  const missing = r.notes.length - found.length;
+  showList(`Notas de revisión${r.reviewer ? ` de ${r.reviewer}` : ''}`, [
+    `${found.length} ${found.length === 1 ? 'nota añadida a su fotograma' : 'notas añadidas a sus fotogramas'} (se pueden deshacer).`,
+    missing ? `${missing} no tienen fotograma: se borraron o son de otra toma.` : '',
+    r.general ? `Comentario general: ${r.general}` : '',
+  ].filter(Boolean).join(' '), items);
+}
+
 async function exportZip() {
   const fr = frames();
   if (!fr.length) { toast('No hay fotogramas para exportar', 'warn'); return; }
@@ -2737,6 +2856,60 @@ async function keepAwake(on) {
       await wakeLock.release();
     }
   } catch { /* not allowed right now */ }
+}
+
+// ---------------------------------------------------------------- learning mode
+
+const LS_LEARN = 'mesora.learn';
+const coach = { on: false, step: 0, played: false, exportOpened: false };
+
+const coachContext = () => ({
+  cameraReady: camera.active || !!state.tether, frames: frames().length, played: coach.played, exportOpened: coach.exportOpened,
+});
+
+function startCoach() {
+  Object.assign(coach, { on: true, step: 0, played: false, exportOpened: false });
+  for (const m of $$('.modal')) if (!m.hidden) closeModal(m);
+  coachTick(true);
+}
+
+function stopCoach() {
+  coach.on = false;
+  try { localStorage.removeItem(LS_LEARN); } catch { /* private mode */ }
+  renderCoach();
+}
+
+function coachTick(force = false) {
+  if (!coach.on || !P()) return;
+  const i = currentStep(coach.step, coachContext());
+  if (i === coach.step && !force) return;
+  coach.step = i;
+  try { localStorage.setItem(LS_LEARN, String(i)); } catch { /* private mode */ }
+  renderCoach();
+}
+
+function renderCoach() {
+  for (const el of $$('.coach-target')) el.classList.remove('coach-target');
+  const box = $('#coach');
+  box.hidden = !coach.on;
+  if (!coach.on) return;
+  const step = LEARN_STEPS[coach.step];
+  $('#coachStep').textContent = step ? `Paso ${coach.step + 1} de ${LEARN_STEPS.length}` : '¡Hecho!';
+  $('#coachTitle').textContent = step ? step.title : 'Ya sabes lo básico';
+  $('#coachText').textContent = step
+    ? step.text
+    : 'Para ir más allá: el modo Estudio (arriba) añade el X-Sheet, el lip sync, más papel cebolla y los atajos. Puedes volver a este tutorial desde Ayuda.';
+  $('#btnCoachNext').textContent = step ? 'Siguiente' : 'Terminar';
+  $('#btnCoachNext').hidden = !!step && !step.manual;
+  $('#btnCoachSkip').hidden = !step || step.manual;
+  const target = step?.targets.map((sel) => $(sel)).find((el) => el && el.offsetParent !== null);
+  target?.classList.add('coach-target');
+}
+
+function coachNext() {
+  if (coach.step >= LEARN_STEPS.length) { stopCoach(); return; }
+  coach.step++;
+  coachTick(true);
 }
 
 function showWelcome() {
@@ -3022,6 +3195,13 @@ function bindUI() {
     cameraApi.onPhoto(onCameraPhoto);
     cameraApi.onError((msg) => toast(msg, 'error', 7000));
   }
+  if (backupApi) {
+    backupApi.onStatus(updateBackupUI);
+    backupApi.status().then(updateBackupUI);
+    $('#btnBackupChoose').addEventListener('click', () => backupAction(backupApi.choose));
+    $('#btnBackupNow').addEventListener('click', () => backupAction(backupApi.run));
+    $('#btnBackupOff').addEventListener('click', () => backupAction(backupApi.disable));
+  }
   if (remoteApi) {
     $('#btnRemote').addEventListener('click', toggleRemote);
     remoteApi.onAction((action) => ACTION_RUN[action]?.());
@@ -3126,12 +3306,13 @@ function bindUI() {
     toast(`Proyecto «${p.name}» creado`, 'ok');
   });
 
-  $('#btnExport').addEventListener('click', () => { populateExportFormats(); openModal('#modalExport'); });
+  $('#btnExport').addEventListener('click', () => { coach.exportOpened = true; populateExportFormats(); openModal('#modalExport'); });
   $('#btnExportVideo').addEventListener('click', exportVideo);
   $('#btnExportZip').addEventListener('click', exportZip);
   $('#btnDxVideo').addEventListener('click', () => exportWithFFmpeg('video'));
   $('#btnDxImages').addEventListener('click', () => exportWithFFmpeg('images'));
   $('#btnDxConform').addEventListener('click', () => conformTake().catch((err) => toast(err.message, 'error', 6000)));
+  $('#btnExportReview').addEventListener('click', () => exportReview());
   $('#btnExportWav').addEventListener('click', () => exportWav().catch((err) => toast(`Error al exportar: ${err.message}`, 'error', 6000)));
   $('#dxFormat').addEventListener('change', () => { $('#dxQualityRow').hidden = $('#dxFormat').value !== 'mp4'; });
   $('#btnExportFrame').addEventListener('click', exportCurrentFrame);
@@ -3141,6 +3322,12 @@ function bindUI() {
   $('#btnHelp').addEventListener('click', () => openModal('#modalHelp'));
   $('#btnShowWelcome').addEventListener('click', showWelcome);
   $('#btnWelcomeHelp').addEventListener('click', () => { closeModal($('#modalWelcome')); openModal('#modalHelp'); });
+  $('#btnWelcomeLearn').addEventListener('click', startCoach);
+  $('#btnLearn').addEventListener('click', startCoach);
+  $('#btnCoachNext').addEventListener('click', coachNext);
+  $('#btnCoachSkip').addEventListener('click', coachNext);
+  $('#btnCoachClose').addEventListener('click', stopCoach);
+  setInterval(() => coachTick(), 500);
   $('#btnWelcomeStart').addEventListener('click', () => {
     closeModal($('#modalWelcome'));
     if (!camera.active) startCamera();
@@ -3281,6 +3468,11 @@ async function init() {
   if (!localStorage.getItem(LS_WELCOMED)) {
     localStorage.setItem(LS_WELCOMED, '1');
     showWelcome();
+  } else {
+    // The learning mode continues where it was left.
+    const learning = Number(localStorage.getItem(LS_LEARN));
+    if (localStorage.getItem(LS_LEARN) != null && learning >= 0) Object.assign(coach, { on: true, step: learning });
+    coachTick(true);
   }
 
   try {
