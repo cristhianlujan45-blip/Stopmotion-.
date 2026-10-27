@@ -374,6 +374,18 @@
         </details>
 
 
+        <details class="group desktop-app-only" data-sec="movil-como-mando">
+          <summary>Móvil como mando</summary>
+          <p class="muted small">Dispara, reproduce y muévete por los fotogramas desde el móvil, sin tocar la mesa. El móvil tiene que estar en la misma red wifi que este ordenador.</p>
+          <div class="row"><button class="btn grow" id="btnRemote">Activar el mando</button></div>
+          <div id="remoteBox" hidden>
+            <img id="remoteQr" class="remote-qr" alt="Código QR para abrir el mando en el móvil">
+            <p class="small">Escanéalo con la cámara del móvil o abre en su navegador:<br><code id="remoteUrl" class="selectable"></code></p>
+            <p class="muted small" id="remoteState">Ningún móvil conectado todavía.</p>
+            <p class="muted small">Quien tenga este código y esté en tu red puede usar el mando; se crea uno nuevo cada vez que lo activas. Otros programas pueden usar la misma API local (ver docs/api-local.md).</p>
+          </div>
+        </details>
+
         <details class="group" data-sec="intervalometro-time-lapse">
           <summary>Intervalómetro (time-lapse)</summary>
           <p class="muted small">Toma una foto automáticamente cada cierto tiempo: ideal para plantas, nubes o construcciones.</p>

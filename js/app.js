@@ -1040,6 +1040,78 @@ async function reviewTake() {
     : 'No se encontraron problemas entre fotogramas consecutivos.', items);
 }
 
+// ---------------------------------------------------------------- phone remote / local API (desktop)
+
+const remoteApi = window.mesoraDesktop?.remote;
+const remote = { on: false, active: false, lastState: '', previewBusy: false };
+
+async function toggleRemote() {
+  const btn = $('#btnRemote');
+  btn.disabled = true;
+  try {
+    if (remote.on) {
+      await remoteApi.stop();
+      remote.on = false;
+      remote.active = false;
+    } else {
+      const info = await remoteApi.start();
+      remote.on = true;
+      $('#remoteQr').src = `data:image/svg+xml;base64,${btoa(info.qr)}`;
+      $('#remoteUrl').textContent = info.url;
+      pushRemoteState(true);
+    }
+  } catch (err) {
+    toast(`No se pudo activar el mando: ${err.message}`, 'error', 6000);
+  } finally {
+    btn.disabled = false;
+    updateRemoteUI();
+  }
+}
+
+function updateRemoteUI() {
+  $('#btnRemote').textContent = remote.on ? 'Desactivar el mando' : 'Activar el mando';
+  $('#remoteBox').hidden = !remote.on;
+  $('#remoteState').textContent = remote.active ? 'Móvil conectado.' : 'Ningún móvil conectado todavía.';
+}
+
+/** What the phone shows: where we are in the take. */
+function remoteState() {
+  const p = P();
+  const fr = frames();
+  return {
+    project: p.name, take: p.scene ? `${p.scene.name} · ${p.take.name}` : '',
+    frames: fr.length, position: Math.min(state.playhead, fr.length - 1) + 1,
+    live: isLive(), playing: player.playing, fps: p.fps, camera: camera.active,
+  };
+}
+
+function pushRemoteState(force = false) {
+  if (!remote.on || !P()) return;
+  const s = remoteState();
+  const json = JSON.stringify(s);
+  if (!force && json === remote.lastState) return;
+  remote.lastState = json;
+  remoteApi.state(s);
+}
+
+/** Small copy of the viewer for the phone, only while one is connected. */
+async function pushRemotePreview() {
+  if (!remote.on || !remote.active || remote.previewBusy) return;
+  remote.previewBusy = true;
+  try {
+    const src = $('#mainCanvas');
+    const w = 480;
+    const c = makeCanvas(w, (w * src.height) / src.width || 270);
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    const blob = await canvasToBlob(c, 'image/jpeg', 0.7);
+    remoteApi.preview(new Uint8Array(await blob.arrayBuffer()));
+  } catch (err) {
+    console.warn('Vista previa para el móvil:', err);
+  } finally {
+    remote.previewBusy = false;
+  }
+}
+
 // ---------------------------------------------------------------- test shot (A/B)
 
 /** A photo to check exposure, focus or framing; it is not added to the animation. */
@@ -2949,6 +3021,16 @@ function bindUI() {
     $('#btnTetherStop').addEventListener('click', () => stopTether());
     cameraApi.onPhoto(onCameraPhoto);
     cameraApi.onError((msg) => toast(msg, 'error', 7000));
+  }
+  if (remoteApi) {
+    $('#btnRemote').addEventListener('click', toggleRemote);
+    remoteApi.onAction((action) => ACTION_RUN[action]?.());
+    remoteApi.onActive((active) => {
+      remote.active = active;
+      updateRemoteUI();
+      if (active) pushRemoteState(true);
+    });
+    setInterval(() => { pushRemoteState(); pushRemotePreview(); }, 600);
   }
   els.play.addEventListener('click', togglePlay);
   $('#tFirst').addEventListener('click', () => setPlayhead(0));

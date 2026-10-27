@@ -461,6 +461,46 @@ const listTakes = () => {
   await win.waitForFunction(() => !document.querySelector('#hudMouth').hidden && document.querySelector('#hudMouth b').textContent === 'Boca: A · I');
   check(await win.evaluate(() => { const img = document.querySelector('#hudMouth img'); return !img.hidden && img.src.startsWith('blob:'); }), 'en vivo, el visor muestra la boca «A» de Ana para la exposición 6');
   await win.click('[data-uimode="simple"]');
+  // 15) Móvil como mando / API local (solo la cámara falsa de Chromium).
+  {
+    await win.click('.tab[data-tab="tools"]');
+    await win.evaluate(() => { document.querySelector('[data-sec="movil-como-mando"]').open = true; });
+    await win.click('#btnRemote');
+    await win.waitForSelector('#remoteBox:not([hidden])');
+    check((await win.getAttribute('#remoteQr', 'src')).startsWith('data:image/svg+xml;base64,'), 'al activar el mando aparece su código QR');
+    const remoteUrl = new URL(await win.textContent('#remoteUrl'));
+    const api = `http://127.0.0.1:${remoteUrl.port}`;
+    const rh = { 'X-Mesora-Token': remoteUrl.searchParams.get('t') };
+    check((await fetch(`${api}/api/state`)).status === 403, 'la API local rechaza peticiones sin el código');
+    const page = await (await fetch(`${api}/?t=${rh['X-Mesora-Token']}`)).text();
+    check(page.includes('CAPTURAR'), 'la página del mando se abre con el código del QR');
+    if (!(await win.evaluate(() => window.mesora.camera.active))) await win.evaluate(() => document.querySelector('#btnCamToggle').click());
+    await win.waitForFunction(() => window.mesora.camera.active, null, { timeout: 15000 });
+    const before = await win.evaluate(() => window.mesora.state.project.frames.length);
+    await win.waitForTimeout(800);
+    const st = await (await fetch(`${api}/api/state`, { headers: rh })).json();
+    check(st.frames === before && st.project === 'Asistente E2E', `la API local da el estado: ${JSON.stringify(st)}`);
+    const shot = await fetch(`${api}/api/action`, { method: 'POST', headers: rh, body: JSON.stringify({ action: 'capture' }) });
+    check(shot.status === 200, 'el móvil pide una captura');
+    await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 1 && window.mesora.state.pendingCaptures === 0, before, { timeout: 15000 });
+    log('OK la captura pedida desde el móvil entra en el timeline');
+    await fetch(`${api}/api/action`, { method: 'POST', headers: rh, body: JSON.stringify({ action: 'prev' }) });
+    await win.waitForFunction((n) => window.mesora.state.playhead === n, before, { timeout: 5000 });
+    log('OK «anterior» desde el móvil mueve el cabezal');
+    check((await fetch(`${api}/api/action`, { method: 'POST', headers: rh, body: JSON.stringify({ action: 'delete' }) })).status === 400, 'borrar no se puede pedir desde el móvil');
+    let preview = null;
+    for (let i = 0; i < 20 && !preview; i++) {
+      const r = await fetch(`${api}/api/preview.jpg`, { headers: rh });
+      if (r.status === 200) preview = Buffer.from(await r.arrayBuffer());
+      else await win.waitForTimeout(300);
+    }
+    check(preview && preview[0] === 0xff && preview[1] === 0xd8, `el móvil recibe la vista previa del visor (${preview?.length} bytes)`);
+    check(await win.textContent('#remoteState') === 'Móvil conectado.', 'la app indica que hay un móvil conectado');
+    await win.click('#btnRemote');
+    await win.waitForSelector('#remoteBox[hidden]', { state: 'attached' });
+    check(await fetch(`${api}/api/state`, { headers: rh }).then(() => false, () => true), 'al desactivarlo, el mando deja de responder');
+  }
+
   check(errors.length === 0, `sin errores en la consola${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   await app.close();
   fs.rmSync(work, { recursive: true, force: true });

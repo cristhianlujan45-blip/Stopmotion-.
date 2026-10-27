@@ -10,6 +10,7 @@ const { initLog, log, logFile } = require('./core/log.cjs');
 const { checkForUpdate } = require('./core/updates.cjs');
 const { serveExport } = require('./export-ipc.cjs');
 const { serveCamera } = require('./camera-ipc.cjs');
+const { serveRemote } = require('./remote-ipc.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'www');
 const START_URL = 'app://mesora/index.html';
@@ -232,7 +233,8 @@ app.whenReady().then(async () => {
   serveAppInfo();
   const exports = serveExport({ ipcMain, dialog, shell, library, getWindow: () => mainWindow, fromApp, log });
   const camera = serveCamera({ ipcMain, dialog, library, getWindow: () => mainWindow, fromApp, log });
-  app.on('before-quit', () => { exports.cancelAll(); camera.stop(); });
+  const remote = serveRemote({ ipcMain, getWindow: () => mainWindow, fromApp, log });
+  app.on('before-quit', () => { exports.cancelAll(); camera.stop(); remote.stop(); });
   allowCamera();
   buildMenu();
   if (process.platform === 'darwin' && !process.env.MESORA_TEST) {

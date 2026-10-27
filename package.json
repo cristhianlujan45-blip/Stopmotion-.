@@ -114,6 +114,7 @@
     }
   },
   "dependencies": {
-    "ffmpeg-static": "5.2.0"
+    "ffmpeg-static": "5.2.0",
+    "qrcode-generator": "2.0.4"
   }
 }
