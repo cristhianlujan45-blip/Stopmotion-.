@@ -68,28 +68,8 @@ export async function renderVideo({
   const exposures = expandExposures(frames);
   const order = [];
   for (const idx of exposures) if (order[order.length - 1] !== idx) order.push(idx);
-
-  // Decode ahead (already scaled to the output size) so drawing never waits on the disk.
-  const decodeFrame = async (idx) => {
-    const rec = await store.original(frames[idx].id);
-    if (!rec) return null;
-    const f = fitContain(rec.w, rec.h, width, height);
-    return createImageBitmap(rec.full, {
-      resizeWidth: Math.max(1, Math.round(f.w)),
-      resizeHeight: Math.max(1, Math.round(f.h)),
-      resizeQuality: 'high',
-    });
-  };
-  const ahead = new Map();
-  let nextToDecode = 0;
-  const fill = () => {
-    while (nextToDecode < order.length && ahead.size < 6) {
-      const idx = order[nextToDecode++];
-      if (!ahead.has(idx)) ahead.set(idx, decodeFrame(idx));
-    }
-  };
-  fill();
-  if (order.length) await ahead.get(order[0]);
+  const decoder = decodeAhead({ frames, store, width, height, order });
+  if (order.length) await decoder.peek(order[0]);
 
   const frameMs = 1000 / fps;
   recorder.start(1000);
@@ -103,10 +83,8 @@ export async function renderVideo({
       const idx = exposures[e];
       if (idx !== current) {
         bmp?.close?.();
-        bmp = await ahead.get(idx);
-        ahead.delete(idx);
+        bmp = await decoder.take(idx);
         current = idx;
-        fill();
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, width, height);
         if (bmp) {
@@ -125,13 +103,94 @@ export async function renderVideo({
     await sleep(frameMs);
   } finally {
     bmp?.close?.();
-    for (const p of ahead.values()) p.then((b) => b?.close?.());
+    decoder.dispose();
     if (audioDest) audio.stop();
     if (recorder.state !== 'inactive') recorder.stop();
     await stopped;
     stream.getTracks().forEach((t) => t.stop());
   }
   return new Blob(chunks, { type: mimeType.split(';')[0] });
+}
+
+/**
+ * Decodes frames ahead of use, already scaled to fit the output size, so
+ * drawing never waits on the disk. `order` lists frame indices in use order.
+ */
+function decodeAhead({ frames, store, width, height, order, depth = 6 }) {
+  const decode = async (idx) => {
+    const rec = await store.original(frames[idx].id);
+    if (!rec) return null;
+    const f = fitContain(rec.w, rec.h, width, height);
+    return createImageBitmap(rec.full, {
+      resizeWidth: Math.max(1, Math.round(f.w)),
+      resizeHeight: Math.max(1, Math.round(f.h)),
+      resizeQuality: 'high',
+    });
+  };
+  const ahead = new Map();
+  let next = 0;
+  const fill = () => {
+    while (next < order.length && ahead.size < depth) {
+      const idx = order[next++];
+      if (!ahead.has(idx)) ahead.set(idx, decode(idx));
+    }
+  };
+  fill();
+  return {
+    peek: (idx) => ahead.get(idx),
+    async take(idx) {
+      const p = ahead.get(idx) ?? decode(idx);
+      ahead.delete(idx);
+      fill();
+      return p;
+    },
+    dispose() {
+      for (const p of ahead.values()) p.then((b) => b?.close?.());
+      ahead.clear();
+    },
+  };
+}
+
+/**
+ * Offline export: composes every exposure at the output size (black bars,
+ * optional grade filters) and passes the RGBA pixels to `write(bytes, times)`.
+ * Consecutive exposures of one frame (holds) are sent once with `times`.
+ * With expand = false each frame is sent once whatever its hold.
+ */
+export async function streamFrames({ frames, store, width, height, filters = null, expand = true, write, onProgress, signal }) {
+  const exposures = expand ? expandExposures(frames) : frames.map((_, i) => i);
+  const runs = [];
+  for (const idx of exposures) {
+    const last = runs[runs.length - 1];
+    if (last && last.idx === idx) last.times++;
+    else runs.push({ idx, times: 1 });
+  }
+  const canvas = makeCanvas(width, height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const decoder = decodeAhead({ frames, store, width, height, order: runs.map((r) => r.idx) });
+  let done = 0;
+  try {
+    for (const run of runs) {
+      if (signal?.aborted) throw new DOMException('Cancelado', 'AbortError');
+      const bmp = await decoder.take(run.idx);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, width, height);
+      if (bmp) {
+        const f = fitContain(bmp.width, bmp.height, width, height);
+        ctx.imageSmoothingQuality = 'high';
+        ctx.filter = filters?.[run.idx] || 'none';
+        ctx.drawImage(bmp, f.x, f.y, f.w, f.h);
+        ctx.filter = 'none';
+        bmp.close?.();
+      }
+      await write(ctx.getImageData(0, 0, width, height).data, run.times);
+      done += run.times;
+      onProgress?.(done / exposures.length);
+    }
+  } finally {
+    decoder.dispose();
+  }
+  return exposures.length;
 }
 
 /** Re-encodes an image with a canvas filter applied (colour grade / deflicker). */

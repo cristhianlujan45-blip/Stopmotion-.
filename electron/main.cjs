@@ -1,10 +1,18 @@
 // MESORA Studio desktop app (Windows, macOS, Linux).
 const {
-  app, BrowserWindow, Menu, ipcMain, net, protocol, session, shell, systemPreferences,
+  app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, screen, session, shell, systemPreferences,
 } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const fs = require('node:fs');
 const { Library } = require('./core/library.cjs');
+const { initLog, log, logFile } = require('./core/log.cjs');
+const { checkForUpdate } = require('./core/updates.cjs');
+const { serveExport } = require('./export-ipc.cjs');
+const { serveCamera } = require('./camera-ipc.cjs');
+const { serveRemote } = require('./remote-ipc.cjs');
+const { serveBackup } = require('./backup-ipc.cjs');
+const { serveRig } = require('./rig-ipc.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'www');
 const START_URL = 'app://mesora/index.html';
@@ -17,7 +25,7 @@ const libraryRoot = () => process.env.MESORA_LIBRARY || path.join(app.getPath('d
 const LIBRARY_METHODS = new Set([
   'listTakes', 'createProduction', 'createScene', 'createTake', 'duplicateScene', 'getProject', 'saveProject',
   'rename', 'ingestCapture', 'readCapture', 'readMeta', 'writeMeta', 'listTrash', 'putBlob', 'getBlob',
-  'conform', 'listHistory', 'restoreHistory', 'markMigrated',
+  'conform', 'listHistory', 'restoreHistory', 'markMigrated', 'writeProxies', 'writeAssist',
 ]);
 
 function fromApp(event) {
@@ -29,7 +37,10 @@ function serveLibrary() {
   ipcMain.handle('library', (event, method, ...args) => {
     if (!fromApp(event)) throw new Error('Origen no permitido');
     if (!LIBRARY_METHODS.has(method)) throw new Error(`Operación no permitida: ${method}`);
-    return library[method](...args);
+    return Promise.resolve(library[method](...args)).catch((err) => {
+      log('error', `library.${method}`, err);
+      throw err;
+    });
   });
   ipcMain.handle('library:root', (event) => {
     if (!fromApp(event)) throw new Error('Origen no permitido');
@@ -79,7 +90,7 @@ function serveWebApp() {
 }
 
 function allowCamera() {
-  const allowed = new Set(['media', 'fullscreen', 'clipboard-sanitized-write']);
+  const allowed = new Set(['media', 'fullscreen', 'clipboard-sanitized-write', 'serial']);
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.has(permission)));
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowed.has(permission));
 }
@@ -134,6 +145,24 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+function serveAppInfo() {
+  let build = {};
+  try { build = JSON.parse(fs.readFileSync(path.join(WEB_ROOT, 'build.json'), 'utf8')); } catch { /* dev run */ }
+  ipcMain.handle('app:info', (event) => {
+    if (!fromApp(event)) throw new Error('Origen no permitido');
+    return { version: app.getVersion(), commit: build.commit || null, date: build.date || null, log: logFile() };
+  });
+  ipcMain.handle('app:checkUpdate', (event) => {
+    if (!fromApp(event)) throw new Error('Origen no permitido');
+    return checkForUpdate({ commit: build.commit || null, fetch: net.fetch.bind(net) });
+  });
+  ipcMain.handle('app:openLog', async (event) => {
+    if (!fromApp(event)) throw new Error('Origen no permitido');
+    const err = await shell.openPath(logFile());
+    if (err) throw new Error(err);
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -155,13 +184,35 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
 
   // External links open in the system browser; the app never navigates away.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    // Viewer mirror for a second screen: full screen on the external display when there is one.
+    if (frameName === 'mesora-monitor' && (url === '' || url === 'about:blank')) {
+      const here = screen.getDisplayMatching(mainWindow.getBounds());
+      const other = screen.getAllDisplays().find((d) => d.id !== here.id);
+      const area = (other || here).workArea;
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          title: 'MESORA · Monitor', backgroundColor: '#000000', autoHideMenuBar: true,
+          x: area.x + 40, y: area.y + 40, width: Math.min(1280, area.width - 80), height: Math.min(720, area.height - 80),
+          fullscreen: !!other,
+        },
+      };
+    }
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('app://')) event.preventDefault();
   });
+
+  const wc = mainWindow.webContents;
+  wc.on('console-message', (event, ...args) => {
+    // Electron passes (level, message, line, source) or, in newer versions, the details on the event.
+    const level = event.level ?? ['verbose', 'info', 'warning', 'error'][args[0]];
+    if (level === 'warning' || level === 'error') log(level, event.message ?? args[1], `${event.sourceId ?? args[3] ?? ''}:${event.lineNumber ?? args[2] ?? ''}`);
+  });
+  wc.on('render-process-gone', (_e, details) => log('error', 'La ventana se cerró inesperadamente', details));
 
   mainWindow.loadURL(START_URL);
 }
@@ -172,12 +223,25 @@ app.on('second-instance', () => {
   mainWindow.focus();
 });
 
+initLog(app.getPath('logs'));
+process.on('uncaughtException', (err) => log('error', 'uncaughtException', err));
+process.on('unhandledRejection', (err) => log('error', 'unhandledRejection', err));
+app.on('child-process-gone', (_e, details) => log('error', 'Proceso auxiliar terminado', details));
+
 app.whenReady().then(async () => {
+  log('info', `MESORA ${app.getVersion()} en ${process.platform} ${process.arch}`);
   serveWebApp();
   serveLibrary();
+  serveAppInfo();
+  const exports = serveExport({ ipcMain, dialog, shell, library, getWindow: () => mainWindow, fromApp, log });
+  const camera = serveCamera({ ipcMain, dialog, library, getWindow: () => mainWindow, fromApp, log });
+  const remote = serveRemote({ ipcMain, getWindow: () => mainWindow, fromApp, log });
+  const backup = serveBackup({ ipcMain, dialog, app, library, getWindow: () => mainWindow, fromApp, log });
+  const rig = serveRig({ ipcMain, dialog, session, getWindow: () => mainWindow, fromApp, log });
+  app.on('before-quit', () => { exports.cancelAll(); camera.stop(); remote.stop(); backup.stop(); rig.stop(); });
   allowCamera();
   buildMenu();
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' && !process.env.MESORA_TEST) {
     await systemPreferences.askForMediaAccess('camera').catch(() => false);
   }
   createWindow();

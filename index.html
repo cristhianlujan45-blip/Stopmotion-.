@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
   <title>MESORA Studio · Animación stop motion</title>
   <meta name="description" content="Estudio de animación stop motion en el navegador: captura, papel cebolla, X-sheet, audio, croma, focus peaking y exportación de video.">
   <meta name="theme-color" content="#0e0f12">
@@ -32,6 +33,14 @@
     <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
     <symbol id="i-note" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M5 4h14v11l-5 5H5zM14 20v-5h5M8 9h8M8 13h5"/></symbol>
     <symbol id="i-blink" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 3l9 5-9 5-9-5zM3 12.5l9 5 9-5M3 17l9 5 9-5"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M4 20l1-5L16 4l4 4L9 19zM14 6l4 4"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M3 12h2M7 8v8M11 4v16M15 7v10M19 10v4M21 12h0"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3 6h7l2 2h9v11H3z"/></symbol>
+    <symbol id="i-table" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M4 4h16v16H4zM4 9h16M4 14h16M9 4v16"/></symbol>
+    <symbol id="i-light" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3z"/></symbol>
+    <symbol id="i-motion" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 17h18M6 17v-3h5v3M14 12l4-4M15 8h3v3"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3 4h18v12H3zM8 20h8M12 16v4"/></symbol>
   </svg>
 
   <header class="topbar">
@@ -46,11 +55,16 @@
       <button id="btnProjects" class="btn ghost">Proyectos</button>
       <button id="btnImport" class="btn ghost" title="Importar imágenes, audio o un proyecto .mesora">Importar</button>
       <button id="btnExport" class="btn">Exportar</button>
+      <div class="segmented mode-switch" role="group" aria-label="Modo de la interfaz" title="Sencillo: lo esencial para animar. Estudio: X-Sheet, atajos de captura múltiple, velocidad de revisión y más herramientas.">
+        <button data-uimode="simple">Sencillo</button>
+        <button data-uimode="studio">Estudio</button>
+      </div>
+      <button id="btnMonitor" class="btn icon" title="Segunda pantalla: abre el visor en otra ventana (en el monitor externo si hay uno)" aria-label="Segunda pantalla"><svg class="ic"><use href="#i-monitor"/></svg></button>
       <button id="btnFullscreen" class="btn icon" title="Pantalla completa (Shift+F)" aria-label="Pantalla completa"><svg class="ic"><use href="#i-full"/></svg></button>
       <button id="btnHelp" class="btn icon" title="Ayuda y atajos de teclado (?)" aria-label="Ayuda">?</button>
       <button id="btnPanel" class="btn icon panel-toggle" title="Mostrar panel" aria-label="Mostrar panel"><svg class="ic"><use href="#i-panel"/></svg></button>
     </div>
-    <input type="file" id="fileImport" accept="image/*,audio/*,.mesora,.zip" multiple hidden>
+    <input type="file" id="fileImport" accept="image/*,audio/*,.mesora,.zip,.json" multiple hidden>
   </header>
 
   <main class="workspace">
@@ -74,18 +88,34 @@
         <span id="hudFrame" class="hud-item"></span>
         <span id="hudTime" class="hud-item mono"></span>
         <span id="hudNote" class="hud-note" hidden></span>
+        <span id="hudAssist" class="hud-warn" hidden></span>
+        <span id="hudMouth" class="hud-mouth" hidden><img alt="" hidden><b></b></span>
         <span id="hudFlags" class="hud-flags"></span>
       </div>
       <div class="drop-hint" id="dropHint" hidden>Suelta para importar</div>
+      <div class="coach" id="coach" hidden role="status" aria-live="polite">
+        <div class="coach-head"><span class="muted small" id="coachStep"></span><button class="btn icon close" id="btnCoachClose" title="Salir del modo aprendizaje" aria-label="Salir del modo aprendizaje">×</button></div>
+        <b id="coachTitle"></b>
+        <p id="coachText"></p>
+        <div class="row coach-actions">
+          <button class="btn small ghost" id="btnCoachSkip">Saltar este paso</button>
+          <button class="btn small primary" id="btnCoachNext">Siguiente</button>
+        </div>
+      </div>
     </section>
 
     <aside class="sidepanel" id="sidepanel">
-      <nav class="tabs" role="tablist">
-        <button class="tab active" data-tab="camera" role="tab">Cámara</button>
-        <button class="tab" data-tab="view" role="tab">Vista</button>
-        <button class="tab" data-tab="guides" role="tab">Guías</button>
-        <button class="tab" data-tab="tools" role="tab">Herramientas</button>
+      <nav class="tabs rail" role="tablist" aria-label="Espacios de trabajo">
+        <button class="tab active" data-tab="camera" role="tab" title="Conectar la cámara y ajustar la captura"><svg class="ic"><use href="#i-camera"/></svg><span>Cámara</span></button>
+        <button class="tab" data-tab="view" role="tab" title="Papel cebolla, modos de vista, color y ayudas para animar"><svg class="ic"><use href="#i-layers"/></svg><span>Animar</span></button>
+        <button class="tab" data-tab="guides" role="tab" title="Dibujar trayectorias y cargar referencias"><svg class="ic"><use href="#i-pen"/></svg><span>Guías</span></button>
+        <button class="tab studio-only" data-tab="xsheet" role="tab" title="Hoja de exposición: planifica acción, diálogo, fonemas, cámara y luz"><svg class="ic"><use href="#i-table"/></svg><span>X-Sheet</span></button>
+        <button class="tab" data-tab="audio" role="tab" title="Sonido y sincronía de labios"><svg class="ic"><use href="#i-wave"/></svg><span>Audio</span></button>
+        <button class="tab studio-only" data-tab="light" role="tab" title="Luces DMX: looks y cambios de luz por exposición"><svg class="ic"><use href="#i-light"/></svg><span>Luz</span></button>
+        <button class="tab studio-only" data-tab="motion" role="tab" title="Motion control: mover la cámara o el decorado entre fotos"><svg class="ic"><use href="#i-motion"/></svg><span>Movim.</span></button>
+        <button class="tab" data-tab="tools" role="tab" title="Velocidad, papelera, historial y herramientas del proyecto"><svg class="ic"><use href="#i-folder"/></svg><span>Proyecto</span></button>
       </nav>
+      <div class="panels">
 
       <div class="tabpanel active" data-panel="camera">
         <details class="group" data-sec="fuente" open>
@@ -139,6 +169,44 @@
             </select>
           </label>
           <label class="check"><input type="checkbox" data-setting="shutterSound"> Sonido de obturador</label>
+          <div class="row">
+            <button class="btn grow" id="btnTestShot" title="Una foto para revisar luz, foco o encuadre. No se añade a la animación.">Foto de prueba</button>
+            <button class="btn toggle grow" id="btnCompareTest" disabled title="Muestra la foto de prueba en la mitad derecha y la cámara en vivo en la izquierda">Comparar</button>
+          </div>
+        </details>
+
+        <details class="group" data-sec="asistente" open>
+          <summary>Asistente de rodaje</summary>
+          <p class="muted small">Compara cada foto con la anterior y te avisa si la cámara se movió, cambió la luz, se disparó dos veces, entró algo por el borde o se perdió el foco. Nunca cambia ni borra fotos.</p>
+          <label class="check"><input type="checkbox" data-setting="assistant.enabled"> Avisarme después de cada foto</label>
+          <label class="check" title="Mientras miras la cámara en vivo, compara la luz y la posición de la cámara con el último fotograma, antes de disparar"><input type="checkbox" data-setting="assistant.live"> Vigilar la luz y la cámara en el vivo</label>
+          <label class="field studio-only"><span>Sensibilidad</span>
+            <select data-setting="assistant.sensitivity">
+              <option value="low">Baja (solo problemas grandes)</option>
+              <option value="normal">Normal</option>
+              <option value="high">Alta (también cambios pequeños)</option>
+            </select>
+          </label>
+          <div class="row">
+            <button class="btn grow" id="btnReviewTake" title="Compara todos los fotogramas consecutivos y lista los que pueden tener un problema">Revisar toda la toma</button>
+          </div>
+        </details>
+
+        <details class="group desktop-app-only" data-sec="camara-de-fotos" open>
+          <summary>Cámara de fotos (réflex o sin espejo)</summary>
+          <p class="muted small">Conecta la cámara por USB con su programa oficial (EOS Utility, NX Tether, Imaging Edge, X Acquire…) y dile que guarde las fotos en una carpeta. Elige esa carpeta aquí: cada foto que hagas entrará sola como fotograma, también en RAW.</p>
+          <div class="row">
+            <button class="btn grow" id="btnTether">Elegir carpeta…</button>
+            <button class="btn ghost" id="btnTetherStop" hidden>Detener</button>
+          </div>
+          <p class="muted small" id="tetherInfo">No se está vigilando ninguna carpeta.</p>
+          <label class="check" title="Si además tienes conectada la salida HDMI de la cámara o una webcam, se guarda también lo que se veía en vivo al llegar cada foto"><input type="checkbox" data-setting="tether.assist"> Guardar también la imagen en vivo (video assist)</label>
+          <label class="field"><span>En el visor mostrar</span>
+            <select data-setting="display">
+              <option value="preview">Las fotos de la cámara (alta calidad)</option>
+              <option value="assist">El video assist (mismo encuadre que el vivo)</option>
+            </select>
+          </label>
         </details>
 
         <details class="group" data-sec="controles-de-camara">
@@ -163,6 +231,20 @@
           <label class="field"><span>Opacidad <output data-out="onion.opacity"></output></span>
             <input type="range" min="0.05" max="1" step="0.01" data-setting="onion.opacity">
           </label>
+          <details class="more">
+            <summary>Más opciones</summary>
+            <label class="field"><span>Fotogramas siguientes (al revisar) <output data-out="onion.next"></output></span>
+              <input type="range" min="0" max="4" step="1" data-setting="onion.next">
+            </label>
+            <label class="check" id="onionColorsRow"><input type="checkbox" data-setting="onion.colors"> Colores: anteriores en rojo, siguientes en verde</label>
+            <label class="field"><span>Cómo se mezclan</span>
+              <select data-setting="onion.blend">
+                <option value="normal">Normal</option>
+                <option value="lighten">Destacar lo claro (objetos claros sobre fondo oscuro)</option>
+                <option value="darken">Destacar lo oscuro (objetos oscuros sobre fondo claro)</option>
+              </select>
+            </label>
+          </details>
         </details>
 
         <details class="group" data-sec="modo-de-visualizacion" open>
@@ -295,18 +377,6 @@
       <div class="tabpanel" data-panel="tools">
         <details class="group" data-sec="proyecto" open>
           <summary>Proyecto</summary>
-          <label class="field"><span>Velocidad (fotogramas por segundo)</span>
-            <select id="fpsSelect">
-              <option value="6">6 fps</option>
-              <option value="8">8 fps</option>
-              <option value="10">10 fps</option>
-              <option value="12">12 fps</option>
-              <option value="15">15 fps</option>
-              <option value="24">24 fps</option>
-              <option value="25">25 fps</option>
-              <option value="30">30 fps</option>
-            </select>
-          </label>
           <p class="muted small" id="projectInfo"></p>
           <div class="row wrap" id="diskTools" hidden>
             <button class="btn" id="btnTrash" title="Fotogramas borrados de esta toma. Sus originales siguen en el disco y se pueden restaurar.">Papelera</button>
@@ -316,17 +386,28 @@
           </div>
         </details>
 
-        <details class="group" data-sec="audio-y-lip-sync" open>
-          <summary>Audio y lip-sync</summary>
-          <p class="muted small" id="audioInfo">Sin pista de audio. Al moverte por los fotogramas escucharás el fragmento correspondiente.</p>
-          <div class="row">
-            <button id="btnAudio" class="btn grow">Cargar audio…</button>
-            <button id="btnAudioClear" class="btn ghost">Quitar</button>
+
+        <details class="group desktop-app-only" data-sec="copia-de-seguridad" open>
+          <summary>Copia de seguridad</summary>
+          <p class="muted small">Cada 10 minutos MESORA copia todas tus producciones en otra carpeta: un disco externo o una carpeta de Dropbox, Google Drive, OneDrive o iCloud. Solo añade y actualiza: nunca borra nada de la copia.</p>
+          <p class="small" id="backupInfo">Sin copia de seguridad.</p>
+          <div class="row wrap">
+            <button class="btn grow" id="btnBackupChoose">Elegir carpeta…</button>
+            <button class="btn" id="btnBackupNow" hidden>Copiar ahora</button>
+            <button class="btn ghost" id="btnBackupOff" hidden>Desactivar</button>
           </div>
-          <label class="field"><span>Empieza en el fotograma (exposición)</span>
-            <input type="number" id="audioOffset" min="0" step="1" value="0">
-          </label>
-          <input type="file" id="fileAudio" accept="audio/*" hidden>
+        </details>
+
+        <details class="group desktop-app-only" data-sec="movil-como-mando">
+          <summary>Móvil como mando</summary>
+          <p class="muted small">Dispara, reproduce y muévete por los fotogramas desde el móvil, sin tocar la mesa. El móvil tiene que estar en la misma red wifi que este ordenador.</p>
+          <div class="row"><button class="btn grow" id="btnRemote">Activar el mando</button></div>
+          <div id="remoteBox" hidden>
+            <img id="remoteQr" class="remote-qr" alt="Código QR para abrir el mando en el móvil">
+            <p class="small">Escanéalo con la cámara del móvil o abre en su navegador:<br><code id="remoteUrl" class="selectable"></code></p>
+            <p class="muted small" id="remoteState">Ningún móvil conectado todavía.</p>
+            <p class="muted small">Quien tenga este código y esté en tu red puede usar el mando; se crea uno nuevo cada vez que lo activas. Otros programas pueden usar la misma API local (ver docs/api-local.md).</p>
+          </div>
         </details>
 
         <details class="group" data-sec="intervalometro-time-lapse">
@@ -363,6 +444,137 @@
           <div class="sp-table-wrap"><table class="sp-table" id="spTable"></table></div>
         </details>
       </div>
+      <div class="tabpanel" data-panel="audio">
+        <details class="group" data-sec="pistas-de-audio" open>
+          <summary>Pistas de audio</summary>
+          <p class="muted small" id="audioInfo"></p>
+          <ul class="track-list" id="trackList"></ul>
+          <div class="row">
+            <button id="btnAudio" class="btn grow" title="Diálogo, música o efectos (WAV, MP3, M4A, OGG…). Puedes elegir varios a la vez.">Añadir audio…</button>
+          </div>
+          <input type="file" id="fileAudio" accept="audio/*" multiple hidden>
+        </details>
+
+        <details class="group studio-only" data-sec="lip-sync" open>
+          <summary>Lip sync (bocas)</summary>
+          <p class="muted small">Escribe en el X-Sheet, columna «Fonema», la boca de cada exposición (o genera un borrador desde el diálogo). Antes de cada foto el visor te dice qué boca poner.</p>
+          <label class="field"><span>Personaje</span><select id="lipCharacter"></select></label>
+          <div class="row">
+            <button class="btn grow" id="btnLipAddChar">Nuevo personaje</button>
+            <button class="btn ghost" id="btnLipRename">Renombrar</button>
+          </div>
+          <div class="mouth-grid" id="mouthGrid" hidden></div>
+          <input type="file" id="fileMouth" accept="image/*" hidden>
+          <label class="check"><input type="checkbox" data-setting="lipsync.hud"> Mostrar la boca en el visor</label>
+          <label class="field"><span>Borrador desde la pista</span><select id="lipTrack"></select></label>
+          <div class="row">
+            <button class="btn grow" id="btnLipDraft" title="Rellena los fonemas vacíos según el volumen de la voz: callado = reposo, antes de hablar = labios cerrados, más fuerte = boca más abierta. No entiende palabras: corrígelo a mano.">Generar borrador de fonemas</button>
+          </div>
+        </details>
+        <datalist id="phonemeList">
+          <option value="A">A · I (muy abierta)</option>
+          <option value="E">E</option>
+          <option value="O">O</option>
+          <option value="U">U · W</option>
+          <option value="MBP">M · B · P (labios cerrados)</option>
+          <option value="FV">F · V</option>
+          <option value="L">L · D · T · N</option>
+          <option value="CS">C · S · R…</option>
+          <option value="-">Reposo</option>
+        </datalist>
+      </div>
+
+      <div class="tabpanel" data-panel="light">
+        <details class="group" data-sec="luces-dmx" open>
+          <summary>Luces DMX</summary>
+          <p class="muted small">Cada foto se hace con la luz de su exposición: antes de disparar, MESORA envía los niveles. Sin aparatos, prueba con el simulador.</p>
+          <div class="light-view" id="lightView"></div>
+          <label class="field"><span>Salida</span>
+            <select data-setting="lighting.output">
+              <option value="none">Desactivada</option>
+              <option value="sim">Simulador (sin aparatos)</option>
+              <option value="artnet" class="desktop-app-only">Art-Net por la red</option>
+              <option value="enttec">ENTTEC DMX USB Pro</option>
+            </select>
+          </label>
+          <div class="grid2" id="artnetFields" hidden>
+            <label class="field"><span>IP del nodo</span><input data-setting="lighting.artnetHost" placeholder="255.255.255.255" spellcheck="false"></label>
+            <label class="field"><span>Universo</span><input type="number" min="0" max="32767" data-setting="lighting.universe" data-type="number"></label>
+          </div>
+          <div class="row" id="enttecRow" hidden><button class="btn grow" id="btnDmxConnect">Conectar el ENTTEC…</button></div>
+          <label class="field"><span>Espera tras cambiar la luz (ms)</span><input type="number" min="0" max="5000" step="50" data-setting="lighting.settleMs" data-type="number"></label>
+          <p class="muted small" id="dmxStatus"></p>
+        </details>
+        <details class="group" data-sec="luces" open>
+          <summary>Luces</summary>
+          <ul class="rig-list" id="lightList"></ul>
+          <div class="row"><button class="btn grow" id="btnAddLight">Añadir luz</button></div>
+        </details>
+        <details class="group" data-sec="looks" open>
+          <summary>Looks</summary>
+          <div class="row"><select id="lookSelect" class="grow" aria-label="Look que editas"></select><button class="btn" id="btnAddLook">Nuevo</button><button class="btn ghost" id="btnRenameLook">Renombrar</button></div>
+          <div class="look-sliders" id="lookSliders"></div>
+          <label class="check"><input type="checkbox" id="lookLive" checked> Enviar a las luces mientras ajusto</label>
+        </details>
+        <details class="group" data-sec="programa-de-luz" open>
+          <summary>Programa de luz</summary>
+          <p class="muted small">Qué look tiene el set desde cada exposición. «Fundido» pasa poco a poco desde la clave anterior.</p>
+          <ul class="rig-list" id="lightKeys"></ul>
+          <div class="row"><button class="btn grow" id="btnAddLightKey" title="El look elegido arriba empieza en la siguiente exposición (la que vas a fotografiar)">Añadir clave con este look</button></div>
+        </details>
+      </div>
+
+      <div class="tabpanel" data-panel="motion">
+        <details class="group" data-sec="motion-control" open>
+          <summary>Motion control</summary>
+          <p class="muted small">Antes de cada foto MESORA mueve los ejes (carro, panorámica, inclinación…) a su posición para esa exposición y espera a que paren. Sin motores, prueba con el simulador.</p>
+          <div class="axis-view" id="axisView"></div>
+          <label class="field"><span>Controlador</span>
+            <select data-setting="moco.output">
+              <option value="none">Desactivado</option>
+              <option value="sim">Simulador (sin motores)</option>
+              <option value="serial">MESORA-Moco por USB (Arduino)</option>
+            </select>
+          </label>
+          <div class="row" id="mocoConnectRow" hidden>
+            <button class="btn grow" id="btnMocoConnect">Conectar</button>
+            <button class="btn ghost" id="btnMocoZero" title="La posición actual de los motores pasa a ser 0">Poner a cero</button>
+          </div>
+          <div class="grid2">
+            <label class="field"><span>Velocidad (pasos/s)</span><input type="number" min="10" max="40000" data-setting="moco.speed" data-type="number"></label>
+            <label class="field"><span>Aceleración (pasos/s²)</span><input type="number" min="10" max="200000" data-setting="moco.accel" data-type="number"></label>
+          </div>
+          <p class="muted small" id="mocoStatus"></p>
+        </details>
+        <details class="group" data-sec="ejes" open>
+          <summary>Ejes</summary>
+          <ul class="rig-list" id="axisList"></ul>
+          <div class="row"><button class="btn grow" id="btnAddAxis">Añadir eje</button></div>
+        </details>
+        <details class="group" data-sec="claves-de-movimiento" open>
+          <summary>Claves de movimiento</summary>
+          <p class="muted small">Coloca los ejes con «Ir a» y guarda su posición en una exposición. Entre claves, MESORA calcula el recorrido con la curva elegida.</p>
+          <ul class="rig-list" id="axisKeys"></ul>
+          <div class="row"><button class="btn grow" id="btnAddAxisKey" title="Guarda dónde están ahora todos los ejes como clave de la siguiente exposición (la que vas a fotografiar)">Guardar posición como clave</button></div>
+          <canvas id="mocoChart" class="sp-chart" width="288" height="90" aria-label="Recorrido de los ejes"></canvas>
+        </details>
+      </div>
+
+      <div class="tabpanel xsheet-panel" data-panel="xsheet">
+        <div class="xs-tools">
+          <label class="field"><span>Animador/a</span><input data-setting="xsheet.animator" placeholder="Nombre"></label>
+          <label class="field"><span>Longitud de la escena (exposiciones)</span><input type="number" min="1" max="99999" step="1" data-setting="xsheet.length"></label>
+          <div class="row wrap">
+            <button class="btn small-btn" id="btnXsCsv" title="Abre en Excel, Numbers, LibreOffice o Google Sheets">Exportar CSV</button>
+            <button class="btn small-btn" id="btnXsImport" title="Trae acción, diálogo, fonemas, cámara y luz desde un CSV con las mismas columnas">Importar CSV</button>
+            <button class="btn small-btn" id="btnXsPrint">Imprimir</button>
+          </div>
+          <input type="file" id="fileXsCsv" accept=".csv,text/csv" hidden>
+          <p class="muted small">Una fila por exposición. Lo que escribas en acción, diálogo, fonema, cámara y luz va unido al tiempo, aunque cambies los fotogramas. ● es la próxima que capturarás.</p>
+        </div>
+        <div id="xsheet"></div>
+      </div>
+      </div>
     </aside>
   </main>
 
@@ -374,6 +586,23 @@
         <button class="btn icon play" id="tPlay" title="Reproducir (0 / Espacio)" aria-label="Reproducir"><svg class="ic"><use href="#i-play"/></svg></button>
         <button class="btn icon" id="tNext" title="Fotograma siguiente (3 / →)" aria-label="Fotograma siguiente"><svg class="ic"><use href="#i-next"/></svg></button>
         <button class="btn live-btn" id="tLive" title="Ir a vista en vivo (5 / Fin)">EN VIVO</button>
+        <select id="fpsSelect" class="fps-select" title="Velocidad de la animación: fotogramas por segundo. 12 es lo habitual para empezar; 24 es cine." aria-label="Fotogramas por segundo">
+          <option value="6">6 fps</option>
+          <option value="8">8 fps</option>
+          <option value="10">10 fps</option>
+          <option value="12">12 fps</option>
+          <option value="15">15 fps</option>
+          <option value="18">18 fps</option>
+          <option value="24">24 fps</option>
+          <option value="25">25 fps</option>
+          <option value="30">30 fps</option>
+          <option value="custom">Otro…</option>
+        </select>
+        <select data-setting="playSpeed" data-type="number" class="fps-select studio-only" title="Velocidad de revisión: reproduce más lento sin cambiar los fps del proyecto. El sonido sigue sincronizado." aria-label="Velocidad de revisión">
+          <option value="1">100 %</option>
+          <option value="0.5">50 %</option>
+          <option value="0.25">25 %</option>
+        </select>
       </div>
       <div class="tgroup">
         <button class="btn icon toggle" id="tLoop" title="Bucle (8 / L)" aria-label="Bucle"><svg class="ic"><use href="#i-loop"/></svg></button>
@@ -422,12 +651,12 @@
             <option value="12">12 fps</option>
             <option value="15">15 fps</option>
             <option value="24">24 fps</option>
+            <option value="18">18 fps</option>
             <option value="25">25 fps</option>
             <option value="30">30 fps</option>
             <option value="8">8 fps</option>
           </select>
           <button class="btn primary" type="submit">Crear</button>
-          <button class="btn ghost" type="button" id="btnImportProject">Importar .mesora</button>
         </form>
         <div class="projects-hint muted small" id="projectsHint" hidden>
           <span>Cada proyecto es una carpeta en <b>Documentos/MESORA</b>, organizada en escenas y tomas. Las fotos originales nunca se borran.</span>
@@ -437,6 +666,8 @@
       </div>
     </div>
   </div>
+
+  <div id="xsheetPrint" class="print-only" aria-hidden="true"></div>
 
   <div class="modal" id="modalList" hidden>
     <div class="modal-card wide">
@@ -452,7 +683,78 @@
     <div class="modal-card">
       <header><h2>Exportar</h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
       <div class="modal-body">
-        <section class="group">
+        <section class="group only-desktop">
+          <div class="grid2">
+            <label class="field"><span>Qué exportar</span>
+              <select id="dxRange">
+                <option value="all">Toda la toma</option>
+                <option value="selection">Solo los fotogramas seleccionados</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="dxAsk"> Preguntar dónde guardar (si no, va a la carpeta «exports» del proyecto)</label>
+        </section>
+        <section class="group only-desktop">
+          <h3>Película</h3>
+          <div class="grid2">
+            <label class="field"><span>Formato</span>
+              <select id="dxFormat">
+                <option value="mp4">MP4 (H.264) · para compartir</option>
+                <option value="prores">MOV ProRes 422 HQ · para postproducción</option>
+                <option value="mjpeg">AVI Motion JPEG</option>
+              </select>
+            </label>
+            <label class="field"><span>Resolución</span>
+              <select id="dxRes" class="res-select">
+                <option value="0">Original</option>
+                <option value="2160">4K (2160p)</option>
+                <option value="1440">2K (1440p)</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="custom">Personalizada…</option>
+              </select>
+            </label>
+            <label class="field" id="dxQualityRow"><span>Calidad</span>
+              <select id="dxQuality">
+                <option value="alta">Alta</option>
+                <option value="media">Media</option>
+                <option value="ligera">Ligera (archivo pequeño)</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="dxAudio" checked> Incluir audio</label>
+          <label class="check"><input type="checkbox" id="dxGrade" checked> Aplicar color y estabilización de luz</label>
+          <button class="btn primary" id="btnDxVideo">Exportar película</button>
+        </section>
+        <section class="group only-desktop">
+          <h3>Imágenes</h3>
+          <div class="grid2">
+            <label class="field"><span>Formato</span>
+              <select id="dxImgFormat">
+                <option value="png">PNG (sin pérdida)</option>
+                <option value="tiff">TIFF (sin pérdida)</option>
+                <option value="jpg">JPEG</option>
+              </select>
+            </label>
+            <label class="field"><span>Resolución</span>
+              <select id="dxImgRes" class="res-select">
+                <option value="0">Original</option>
+                <option value="2160">4K (2160p)</option>
+                <option value="1440">2K (1440p)</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="custom">Personalizada…</option>
+              </select>
+            </label>
+          </div>
+          <label class="check"><input type="checkbox" id="dxExpand" checked> Repetir cada fotograma según su duración</label>
+          <label class="check"><input type="checkbox" id="dxGradeImg" checked> Aplicar color y estabilización de luz</label>
+          <div class="row wrap">
+            <button class="btn" id="btnDxImages">Exportar imágenes</button>
+            <button class="btn" id="btnDxConform" title="Copia las fotos originales de la cámara, sin tocarlas, numeradas en el orden del timeline">Copiar fotos originales en orden</button>
+          </div>
+        </section>
+        <section class="group only-web">
           <h3>Video</h3>
           <div class="grid2">
             <label class="field"><span>Formato</span><select id="exFormat"></select></label>
@@ -485,7 +787,7 @@
           <p class="muted small">La exportación de video se graba en tiempo real: mantén esta pestaña visible.</p>
           <button class="btn primary" id="btnExportVideo">Exportar video</button>
         </section>
-        <section class="group">
+        <section class="group only-web">
           <h3>Secuencia de imágenes (ZIP)</h3>
           <label class="check"><input type="checkbox" id="exExpand" checked> Repetir cada fotograma según su duración</label>
           <label class="check"><input type="checkbox" id="exGradeZip"> Aplicar color y estabilización de luz (si no, se copian las fotos originales)</label>
@@ -495,7 +797,9 @@
           <h3>Otros</h3>
           <div class="row wrap">
             <button class="btn" id="btnExportFrame">Fotograma actual (PNG)</button>
-            <button class="btn" id="btnExportProject">Proyecto completo (.mesora)</button>
+            <button class="btn" id="btnExportReview" title="Un solo archivo HTML para que otra persona vea la toma en su navegador y te devuelva notas por fotograma">Paquete de revisión</button>
+            <button class="btn" id="btnExportWav" title="La mezcla de todas las pistas que suenan, del mismo tramo que el video">Sonido (WAV)</button>
+            <button class="btn" id="btnExportProject" title="Un solo archivo con todo el proyecto, para pasarlo a otro equipo o a la versión web o Android">Copia del proyecto (.mesora)</button>
           </div>
         </section>
         <div class="progress" id="exProgress" hidden>
@@ -512,65 +816,28 @@
       <div class="modal-body">
         <div class="help-top">
           <p class="muted">Rueda del ratón: desplazar la línea de tiempo · <kbd>Ctrl</kbd> + rueda: zoom · arrastra la regla de tiempo para recorrer la animación · arrastra fotogramas para reordenarlos.</p>
-          <button class="btn" id="btnShowWelcome">Ver guía de inicio</button>
+          <div class="row">
+            <label class="lang-field" title="Idioma de la interfaz"><span>Idioma</span><select class="lang-select" aria-label="Idioma" data-no-i18n></select></label>
+            <button class="btn" id="btnShowWelcome">Ver guía de inicio</button>
+            <button class="btn" id="btnLearn" title="MESORA te guía paso a paso en tu primera animación">Modo aprendizaje</button>
+          </div>
         </div>
-      <div class="help-grid">
-        <div>
-          <h3>Captura</h3>
-          <dl>
-            <dt><kbd>Enter</kbd></dt><dd>Capturar fotograma</dd>
-            <dt><kbd>Shift</kbd>+<kbd>Enter</kbd></dt><dd>Reemplazar fotograma actual</dd>
-            <dt><kbd>Alt</kbd>+<kbd>Enter</kbd></dt><dd>Insertar después del actual</dd>
-          </dl>
-          <h3>Navegación</h3>
-          <dl>
-            <dt><kbd>1</kbd> / <kbd>←</kbd></dt><dd>Fotograma anterior</dd>
-            <dt><kbd>3</kbd> / <kbd>→</kbd></dt><dd>Fotograma siguiente</dd>
-            <dt><kbd>2</kbd> / <kbd>Tab</kbd></dt><dd>Alternar vivo ↔ último</dd>
-            <dt><kbd>5</kbd> / <kbd>Fin</kbd></dt><dd>Ir a vista en vivo</dd>
-            <dt><kbd>Inicio</kbd></dt><dd>Primer fotograma</dd>
-          </dl>
+        <div class="help-top" id="appInfo" hidden>
+          <p class="muted small" id="appVersion"></p>
+          <button class="btn ghost small-btn" id="btnOpenLog" title="Archivo con los errores y avisos de la app, útil para informar de un problema">Abrir registro de errores</button>
         </div>
-        <div>
-          <h3>Reproducción</h3>
-          <dl>
-            <dt><kbd>0</kbd> / <kbd>Espacio</kbd></dt><dd>Reproducir / detener</dd>
-            <dt><kbd>6</kbd></dt><dd>Reproducción corta + vivo</dd>
-            <dt><kbd>8</kbd> / <kbd>L</kbd></dt><dd>Bucle</dd>
-            <dt><kbd>P</kbd></dt><dd>Ping-pong</dd>
-          </dl>
-          <h3>Edición</h3>
-          <dl>
-            <dt><kbd>Supr</kbd></dt><dd>Eliminar selección</dd>
-            <dt><kbd>N</kbd></dt><dd>Escribir nota del fotograma</dd>
-            <dt><kbd>Ctrl</kbd>+<kbd>D</kbd></dt><dd>Duplicar selección</dd>
-            <dt><kbd>+</kbd> / <kbd>−</kbd></dt><dd>Duración del fotograma</dd>
-            <dt><kbd>Ctrl</kbd>+<kbd>A</kbd></dt><dd>Seleccionar todo</dd>
-            <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Deshacer</dd>
-            <dt><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd></dt><dd>Rehacer</dd>
-          </dl>
-        </div>
-        <div>
-          <h3>Vista</h3>
-          <dl>
-            <dt><kbd>O</kbd></dt><dd>Papel cebolla</dd>
-            <dt><kbd>D</kbd></dt><dd>Modo diferencia</dd>
-            <dt><kbd>B</kbd></dt><dd>Parpadeo vivo/último</dd>
-            <dt><kbd>G</kbd></dt><dd>Cambiar cuadrícula</dd>
-            <dt><kbd>F</kbd></dt><dd>Focus peaking</dd>
-            <dt><kbd>Z</kbd></dt><dd>Lupa de enfoque</dd>
-            <dt><kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Pantalla completa</dd>
-            <dt><kbd>?</kbd></dt><dd>Esta ayuda</dd>
-          </dl>
-        </div>
+      <div class="help-top">
+        <p class="muted small">Pulsa «Cambiar» y luego la tecla o combinación que prefieras. Las teclas numéricas siguen la disposición del teclado numérico de los animadores profesionales.</p>
+        <button class="btn ghost small-btn" id="btnResetKeys">Restablecer atajos</button>
       </div>
+      <div class="help-grid" id="shortcutList"></div>
       </div>
     </div>
   </div>
 
   <div class="modal" id="modalWelcome" hidden>
     <div class="modal-card wide welcome">
-      <header><h2>Bienvenido a MESORA Studio</h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
+      <header><h2>Bienvenido a MESORA Studio</h2><select class="lang-select welcome-lang" aria-label="Idioma" data-no-i18n></select><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
       <div class="modal-body">
         <p class="lead">Haz tu primera animación stop motion en cuatro pasos:</p>
         <ol class="steps">
@@ -582,6 +849,7 @@
         <p class="muted small">Consejos: entre 8 y 12 fotos por segundo de animación es lo habitual. Usa luz artificial constante y cierra las cortinas para evitar parpadeos. <span id="welcomeStorage">Todo se guarda automáticamente en este navegador.</span></p>
         <div class="row welcome-actions">
           <button class="btn ghost" id="btnWelcomeHelp">Ver atajos de teclado</button>
+          <button class="btn" id="btnWelcomeLearn" title="MESORA te guía paso a paso en tu primera animación">Aprender paso a paso</button>
           <button class="btn primary" id="btnWelcomeStart">Empezar a animar</button>
         </div>
       </div>

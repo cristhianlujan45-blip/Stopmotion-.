@@ -13,8 +13,9 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {
-  PARTIAL, writeAtomic, writeNew, writeJSON, readJSON, exists, copyNew, safeName,
+  PARTIAL, writeAtomic, writeNew, copyAtomicNew, writeJSON, readJSON, exists, copyNew, safeName,
 } = require('./fsutil.cjs');
+const { extOf, isRaw, isDisplayable, largestJpeg } = require('./rawpreview.cjs');
 
 const VERSION = 1;
 const EXPOSURE = 'X1';
@@ -209,10 +210,10 @@ class Library {
     return this.getProject(key);
   }
 
-  async _writeScene(prodDir, sceneId, { name, fps, settings = null, audio = null }) {
+  async _writeScene(prodDir, sceneId, { name, fps, settings = null, audio = null, tracks = null }) {
     const now = Date.now();
     await writeJSON(path.join(this._sceneDir(prodDir, sceneId), 'scene.json'), {
-      format: 'mesora-scene', version: VERSION, id: sceneId, name, fps, settings, audio, createdAt: now, updatedAt: now,
+      format: 'mesora-scene', version: VERSION, id: sceneId, name, fps, settings, audio, tracks, createdAt: now, updatedAt: now,
     });
     return sceneId;
   }
@@ -268,7 +269,7 @@ class Library {
     const srcScene = await readJSON(path.join(this._sceneDir(prodDir, sceneId), 'scene.json'));
     const newId = await this._nextId(path.join(prodDir, 'scenes'), 'sc', 3, 10);
     await this._writeScene(prodDir, newId, {
-      name: name || `${srcScene.name} (copia)`, fps: srcScene.fps, settings: srcScene.settings, audio: srcScene.audio,
+      name: name || `${srcScene.name} (copia)`, fps: srcScene.fps, settings: srcScene.settings, audio: srcScene.audio, tracks: srcScene.tracks ?? null,
     });
     const takesDir = path.join(this._sceneDir(prodDir, sceneId), 'takes');
     let firstKey = null;
@@ -288,7 +289,7 @@ class Library {
         const ext = path.extname(file);
         await copyNew(path.join(src.capDir, file), path.join(destDir, 'capture', EXPOSURE, `${sceneId}_${takeId}_${EXPOSURE}_${id}${ext}`));
       }
-      for (const suffix of ['.preview.jpg', '.thumb.jpg', '.json']) {
+      for (const suffix of ['.preview.jpg', '.thumb.jpg', '.full.jpg', '.assist.jpg', '.json']) {
         const from = path.join(src.dir, 'proxy', `${id}${suffix}`);
         if (await exists(from)) await copyNew(from, path.join(destDir, 'proxy', `${id}${suffix}`));
       }
@@ -344,6 +345,7 @@ class Library {
           guides: edl.guides || [],
           settings: scene.settings || null,
           audio: scene.audio || null,
+          tracks: scene.tracks || null,
           createdAt: edl.createdAt,
           updatedAt: Math.max(edl.updatedAt || 0, scene.updatedAt || 0, prod.updatedAt || 0),
           production: { id: st.prodId, name: prod.name },
@@ -387,7 +389,9 @@ class Library {
 
       const scenePath = path.join(this._sceneDir(st.prodDir, st.sceneId), 'scene.json');
       const scene = await readJSON(scenePath);
-      const nextScene = { ...scene, fps: project.fps, settings: project.settings ?? null, audio: project.audio ?? null };
+      const nextScene = {
+        ...scene, fps: project.fps, settings: project.settings ?? null, audio: project.audio ?? null, tracks: project.tracks ?? null,
+      };
       if (JSON.stringify(nextScene) !== JSON.stringify(scene)) await writeJSON(scenePath, { ...nextScene, updatedAt: now });
 
       const edlPath = path.join(st.dir, 'edl.json');
@@ -490,6 +494,7 @@ class Library {
     await writeNew(path.join(st.capDir, name), Buffer.from(full.bytes));
     st.captures.set(id, { files: [name] });
     st.known.add(id);
+    const display = isRaw(name) ? await this._rawDisplay(st, id, path.join(st.capDir, name)) : null;
     // Proxies and metadata can always be regenerated from the original.
     const proxy = path.join(st.dir, 'proxy');
     try {
@@ -501,18 +506,84 @@ class Library {
     } catch (err) {
       console.warn('No se pudieron guardar las vistas previas de', id, err);
     }
-    return { id, file: path.join(st.capDir, name) };
+    return { id, file: path.join(st.capDir, name), display };
   }
 
-  /** Reads a capture: kind 'full' (original), 'preview' or 'thumb' (proxies, falling back to the original). */
+  /** The JPEG a camera embeds in a RAW file, saved as the image to show and export. */
+  async _rawDisplay(st, id, rawPath) {
+    const found = largestJpeg(await fsp.readFile(rawPath));
+    if (!found) return null;
+    await writeAtomic(path.join(st.dir, 'proxy', `${id}.full.jpg`), found.bytes);
+    return { bytes: found.bytes, width: found.width, height: found.height };
+  }
+
+  /**
+   * Adds one photo made of several files (RAW + JPEG of the same shot) taken
+   * from outside, e.g. the camera's tethering folder. The files are copied, never moved.
+   * Returns { id, display } where display is the embedded JPEG of a RAW-only photo.
+   */
+  async ingestFiles(key, files) {
+    const st = await this._take(key);
+    if (!files?.length) throw new Error('No hay archivos que importar');
+    const id = capId(st.next++);
+    const names = [];
+    for (const f of files) {
+      const ext = extOf(f.name);
+      if (!/^[a-z0-9]{1,5}$/.test(ext)) throw new Error(`Extensión no válida: ${f.name}`);
+      const name = `${st.sceneId}_${st.takeId}_${EXPOSURE}_${id}.${ext}`;
+      await copyAtomicNew(f.path, path.join(st.capDir, name));
+      names.push(name);
+    }
+    st.captures.set(id, { files: names });
+    st.known.add(id);
+    let display = null;
+    if (!names.some(isDisplayable)) {
+      const raw = names.find(isRaw);
+      if (raw) display = await this._rawDisplay(st, id, path.join(st.capDir, raw));
+    }
+    await writeJSON(path.join(st.dir, 'proxy', `${id}.json`), {
+      source: files.map((f) => f.name), created: Date.now(),
+      ...(display ? { w: display.width, h: display.height } : {}),
+    });
+    return { id, display, files: names };
+  }
+
+  /** Saves the playback proxies and metadata the editor made for a capture. */
+  async writeProxies(key, id, { preview, thumb, meta = {} }) {
+    const st = await this._take(key);
+    if (!st.captures.has(id)) throw new Error(`No se encuentra la captura ${id}`);
+    const proxy = path.join(st.dir, 'proxy');
+    if (preview?.bytes) await writeAtomic(path.join(proxy, `${id}.preview.jpg`), Buffer.from(preview.bytes));
+    if (thumb?.bytes) await writeAtomic(path.join(proxy, `${id}.thumb.jpg`), Buffer.from(thumb.bytes));
+    const file = path.join(proxy, `${id}.json`);
+    await writeJSON(file, { ...(await readJSON(file, {})), ...meta });
+  }
+
+  /** Video-assist frame (from the live video) that goes with a camera photo. */
+  async writeAssist(key, id, { bytes }) {
+    const st = await this._take(key);
+    if (!st.captures.has(id)) throw new Error(`No se encuentra la captura ${id}`);
+    await writeAtomic(path.join(st.dir, 'proxy', `${id}.assist.jpg`), Buffer.from(bytes));
+  }
+
+  /**
+   * Reads a capture. kind 'full' is the original (the embedded JPEG for RAW
+   * photos); 'preview', 'thumb' and 'assist' are proxies that fall back to
+   * the next best image.
+   */
   async readCapture(key, id, kind = 'full') {
     const st = await this._take(key);
-    if (kind !== 'full') {
-      const p = path.join(st.dir, 'proxy', `${id}.${kind}.jpg`);
+    const chain = { preview: ['preview'], thumb: ['thumb', 'preview'], assist: ['assist', 'preview'] }[kind] || [];
+    for (const k of chain) {
+      const p = path.join(st.dir, 'proxy', `${id}.${k}.jpg`);
       if (await exists(p)) return { bytes: await fsp.readFile(p), type: 'image/jpeg' };
     }
     const file = this._capturePath(st, id);
     if (!file) throw new Error(`No se encuentra la captura ${id}`);
+    if (isRaw(file)) {
+      const shown = path.join(st.dir, 'proxy', `${id}.full.jpg`);
+      if (await exists(shown)) return { bytes: await fsp.readFile(shown), type: 'image/jpeg' };
+    }
     return { bytes: await fsp.readFile(file), type: typeFor(file) };
   }
 
@@ -559,6 +630,21 @@ class Library {
     if (!found) return null;
     const file = path.join(found.dir, found.name);
     return { id, name: found.name.slice(id.length + 2), type: typeFor(file), bytes: await fsp.readFile(file) };
+  }
+
+  /** Where exports of a take go, and the scene/take prefix for their names. */
+  async exportTarget(key) {
+    const st = await this._take(key);
+    const dir = path.join(st.prodDir, 'exports');
+    await fsp.mkdir(dir, { recursive: true });
+    return { dir, prefix: `${st.sceneId}_${st.takeId}` };
+  }
+
+  /** Absolute path of a media file (for FFmpeg), or null. */
+  async blobPath(key, id) {
+    const st = await this._take(key);
+    const found = await this._findBlob(st, id);
+    return found ? path.join(found.dir, found.name) : null;
   }
 
   // ------------------------------------------------------------ conform

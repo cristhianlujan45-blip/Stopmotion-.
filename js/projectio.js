@@ -1,6 +1,7 @@
 import { library } from './library.js';
 import { uid, extForType, typeForName } from './util.js';
 import { createZip, readZip } from './zip.js';
+import { mediaIds, remapMedia } from './media.js';
 
 const FORMAT = 'mesora-project';
 
@@ -13,8 +14,7 @@ export async function exportProjectFile(project, onProgress) {
     if (full) files.push({ name: `frames/${ids[i]}.${extForType(full.type)}`, data: full });
     onProgress?.((i + 1) / ids.length / 2);
   }
-  for (const blobId of [project.audio?.blobId, project.settings?.chroma?.bgBlobId, project.settings?.reference?.blobId]) {
-    if (!blobId) continue;
+  for (const blobId of mediaIds(project)) {
     const rec = await library.getBlob(project.id, blobId).catch(() => null);
     if (rec) files.push({ name: `blobs/${blobId}__${rec.name || 'archivo'}`, data: rec.blob });
   }
@@ -32,16 +32,10 @@ export async function importProjectFile(file, store, onProgress) {
   if (data.format !== FORMAT || !data.project) throw new Error('Formato de proyecto desconocido');
   const src = data.project;
 
-  const settings = {
-    ...(src.settings || {}),
-    chroma: { ...(src.settings?.chroma || {}), bgBlobId: null },
-    reference: { ...(src.settings?.reference || {}), blobId: null },
-  };
   const project = await library.createProject({
-    ...src, id: uid(), frames: [], createdAt: Date.now(), updatedAt: Date.now(), settings, audio: null,
+    ...src, id: uid(), frames: [], createdAt: Date.now(), updatedAt: Date.now(), settings: null, audio: null, tracks: null,
   });
   project.guides = src.guides || [];
-  project.settings = settings;
 
   const frameEntry = new Map();
   for (const e of entries) {
@@ -70,12 +64,8 @@ export async function importProjectFile(file, store, onProgress) {
     await library.putBlob(project.id, { id, name, blob: await entry.blob(typeForName(name)) });
     return id;
   };
-  const audioId = await copyBlob(src.audio?.blobId);
-  if (audioId) project.audio = { ...src.audio, blobId: audioId };
-  const bgId = await copyBlob(src.settings?.chroma?.bgBlobId);
-  if (bgId) project.settings.chroma.bgBlobId = bgId;
-  const refId = await copyBlob(src.settings?.reference?.blobId);
-  if (refId) project.settings.reference.blobId = refId;
+  const media = await remapMedia(structuredClone({ audio: src.audio || null, tracks: src.tracks || null, settings: src.settings || {} }), copyBlob);
+  Object.assign(project, media);
 
   await library.saveProject(project);
   return project;

@@ -3,6 +3,7 @@
 // a project only counts as migrated once every frame and file has been copied.
 import * as db from './db.js';
 import { library } from './library.js';
+import { remapMedia } from './media.js';
 
 /** Projects still stored in IndexedDB that have no production folder yet. */
 export async function pendingBrowserProjects() {
@@ -32,10 +33,7 @@ export async function migrateProject(old, onProgress) {
     await library.putBlob(project.id, { id: blobId, name: rec.name, blob: rec.blob });
     return blobId;
   };
-  const settings = structuredClone(old.settings || {});
-  if (settings.chroma) settings.chroma.bgBlobId = await copyBlob(settings.chroma.bgBlobId);
-  if (settings.reference) settings.reference.blobId = await copyBlob(settings.reference.blobId);
-  const audioId = await copyBlob(old.audio?.blobId);
+  const media = await remapMedia(structuredClone({ audio: old.audio || null, tracks: old.tracks || null, settings: old.settings || {} }), copyBlob);
 
   Object.assign(project, {
     name: old.name,
@@ -46,8 +44,9 @@ export async function migrateProject(old, onProgress) {
       .filter((f) => idMap.has(f.id))
       .map((f) => ({ key: f.key, id: idMap.get(f.id), hold: f.hold || 1, ...(f.note ? { note: f.note } : {}) })),
     guides: old.guides || [],
-    settings,
-    audio: audioId ? { ...old.audio, blobId: audioId } : null,
+    settings: media.settings,
+    audio: media.audio,
+    tracks: media.tracks,
   });
   await library.saveProject(project);
   await library.markMigrated(project.id, old.id);

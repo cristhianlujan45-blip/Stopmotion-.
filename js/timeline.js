@@ -1,3 +1,4 @@
+import { drawWaveforms } from './audio.js';
 import { formatTime } from './timing.js';
 
 const LIVE_MIN_W = 76;
@@ -25,6 +26,14 @@ export class Timeline {
     this.dropTarget = null;
     this.dropEl = null;
     this.lastCurrent = null;
+    // Thumbnails load only when their cell scrolls into view, so long takes open fast.
+    this.thumbObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        this.thumbObserver.unobserve(entry.target);
+        this.loadThumb(entry.target);
+      }
+    }, { root: wrap, rootMargin: '0px 600px' });
 
     this.liveCell = document.createElement('div');
     this.liveCell.className = 'cell live';
@@ -143,10 +152,15 @@ export class Timeline {
     el.className = 'cell';
     el.draggable = true;
     el.innerHTML = '<div class="inner"><img alt="" draggable="false"><span class="note"></span><div class="meta"><span class="num"></span><span class="hold"></span></div></div>';
-    const img = el.querySelector('img');
-    this.store.thumbUrl(f.id).then((url) => { if (url) img.src = url; });
+    el.dataset.id = f.id;
     this.cells.set(f.key, el);
+    this.thumbObserver.observe(el);
     return el;
+  }
+
+  loadThumb(el) {
+    const img = el.querySelector('img');
+    this.store.thumbUrl(el.dataset.id).then((url) => { if (url) img.src = url; });
   }
 
   render(frames, zoom, fps) {
@@ -171,7 +185,7 @@ export class Timeline {
       exposures += f.hold;
     }
     for (const [key, el] of this.cells) {
-      if (!keys.has(key)) { el.remove(); this.cells.delete(key); }
+      if (!keys.has(key)) { this.thumbObserver.unobserve(el); el.remove(); this.cells.delete(key); }
     }
     this.liveCell.style.width = `${Math.max(zoom, LIVE_MIN_W)}px`;
     if (this.root.children[frames.length] !== this.liveCell) this.root.insertBefore(this.liveCell, this.root.children[frames.length] || null);
@@ -226,11 +240,12 @@ export class Timeline {
     else if (right > wrap.scrollLeft + wrap.clientWidth - pad) wrap.scrollLeft = right - wrap.clientWidth + pad;
   }
 
-  drawWave(audio, fps, offset, totalExposures) {
-    if (!audio?.ready) { this.wave.hidden = true; return; }
+  /** Waveforms of the sound tracks, layered; `endSeconds` is where the last one ends. */
+  drawWave(layers, fps, totalExposures, endSeconds) {
+    if (!layers.some((l) => l.peaks)) { this.wave.hidden = true; return; }
     this.wave.hidden = false;
-    const exposuresShown = Math.max(totalExposures, offset + Math.ceil(audio.duration * fps));
+    const exposuresShown = Math.max(totalExposures, Math.ceil(endSeconds * fps));
     const cssWidth = Math.max(this.root.scrollWidth, exposuresShown * this.zoom + Math.max(this.zoom, LIVE_MIN_W));
-    audio.drawWaveform(this.wave, this.zoom, fps, offset, cssWidth);
+    drawWaveforms(this.wave, layers, this.zoom, fps, cssWidth);
   }
 }

@@ -73,6 +73,30 @@ async function writeNew(file, data) {
   await syncDir(path.dirname(file));
 }
 
+/**
+ * Copies an outside file (e.g. a photo from the camera's tethering folder) as
+ * a new original: copy to a temporary file, flush, then create the final name
+ * without overwriting. A crash never leaves a half-copied file under the final name.
+ */
+async function copyAtomicNew(src, dest) {
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
+  const tmp = tempName(dest);
+  await fsp.copyFile(src, tmp, fs.constants.COPYFILE_EXCL);
+  const fh = await fsp.open(tmp, 'r+');
+  try { await fh.sync(); } finally { await fh.close(); }
+  try {
+    await fsp.link(tmp, dest);
+    await fsp.rm(tmp, { force: true });
+  } catch (err) {
+    if (err.code === 'EEXIST' || fs.existsSync(dest)) {
+      await fsp.rm(tmp, { force: true });
+      throw new Error(`Ya existe un archivo con ese nombre, no se sobrescribe: ${dest}`);
+    }
+    await fsp.rename(tmp, dest);
+  }
+  await syncDir(path.dirname(dest));
+}
+
 async function writeJSON(file, value) {
   await writeAtomic(file, `${JSON.stringify(value, null, 1)}\n`);
 }
@@ -118,5 +142,5 @@ function safeName(name, fallback = 'sin-nombre') {
 }
 
 module.exports = {
-  PARTIAL, syncDir, writeAtomic, writeNew, writeJSON, readJSON, exists, copyNew, sha256, safeName,
+  PARTIAL, syncDir, writeAtomic, writeNew, copyAtomicNew, writeJSON, readJSON, exists, copyNew, sha256, safeName,
 };

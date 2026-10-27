@@ -2,22 +2,32 @@ import { library } from './library.js';
 import { makeCanvas, canvasToBlob } from './util.js';
 import { meanLuma } from './grading.js';
 
-export const PREVIEW_MAX = 1280;
+/** Longest side of the playback proxies: 1080p in the desktop app, 720p in the browser and on phones. */
+export const previewMax = () => (window.mesoraDesktop ? 1920 : 1280);
+/** Memory for decoded frames: about 6 s of 1080p at 24 fps on desktop. */
+const CACHE_BYTES = () => (window.mesoraDesktop ? 1200 : 300) * 1024 * 1024;
 export const THUMB_H = 72;
+
+const RAW_EXT = /\.(cr2|cr3|crw|nef|nrw|arw|srf|sr2|raf|orf|rw2|rwl|pef|dng|srw|x3f|3fr|iiq|erf|mef|mos|kdc|dcr)$/i;
+/** Camera RAW file, judged by its name (browsers do not know these formats). */
+export const isRawFile = (file) => RAW_EXT.test(file?.name || '');
 
 /**
  * Persists captured frames (full image + preview + thumbnail) and keeps a
  * bounded LRU cache of decoded ImageBitmaps for fast drawing.
  */
 export class FrameStore {
-  constructor({ maxCache = 72, onLoad = () => {} } = {}) {
+  constructor({ maxBytes = CACHE_BYTES(), onLoad = () => {} } = {}) {
     this.projectId = null;
     this.cache = new Map();
+    this.bytes = 0;
     this.pending = new Map();
     this.thumbUrls = new Map();
     this.lumas = new Map();
-    this.maxCache = maxCache;
+    this.maxBytes = maxBytes;
     this.onLoad = onLoad;
+    /** What playback and onion skin show: 'preview' (camera photos) or 'assist' (live-video frames). */
+    this.displayKind = 'preview';
   }
 
   /** Stores a captured canvas. Resolves to { id, w, h }. */
@@ -27,8 +37,12 @@ export class FrameStore {
     return this._add(projectId, canvas, canvas.width, canvas.height, full);
   }
 
-  /** Stores an image file, keeping the original bytes. Resolves to { id, w, h }. */
+  /** Stores an image file, keeping the original bytes (also camera RAW on desktop). Resolves to { id, w, h }. */
   async addFromBlob(projectId, blob) {
+    if (isRawFile(blob)) {
+      const { id, display } = await library.addRawFile(projectId, blob);
+      return this.addIngested(projectId, id, display);
+    }
     const bmp = await createImageBitmap(blob);
     try {
       return await this._add(projectId, bmp, bmp.width, bmp.height, blob);
@@ -37,8 +51,37 @@ export class FrameStore {
     }
   }
 
+  /**
+   * Makes the playback proxies of a capture already stored by the library
+   * (a photo from the camera folder or a RAW file). `display` is the image to
+   * show, or null to use the stored original.
+   */
+  async addIngested(projectId, id, display) {
+    const blob = display || await library.getFrame(projectId, id, 'full');
+    const bmp = await createImageBitmap(blob);
+    try {
+      const { w, h } = { w: bmp.width, h: bmp.height };
+      const { preview, thumb, luma, bitmap } = await this._proxies(bmp, w, h);
+      await library.writeProxies(projectId, id, { preview, thumb, w, h, luma });
+      this.lumas.set(id, luma);
+      this._set(`${id}:preview`, bitmap);
+      return { id, w, h };
+    } finally {
+      bmp.close?.();
+    }
+  }
+
   async _add(projectId, source, w, h, full) {
-    const pw = Math.min(PREVIEW_MAX, w);
+    const { preview, thumb, luma, bitmap } = await this._proxies(source, w, h);
+    const id = await library.addFrame(projectId, { full, preview, thumb, w, h, luma });
+    this.lumas.set(id, luma);
+    this._set(`${id}:preview`, bitmap);
+    return { id, w, h };
+  }
+
+  /** Playback preview, timeline thumbnail and mean brightness of an image. */
+  async _proxies(source, w, h) {
+    const pw = Math.min(previewMax(), w);
     const ph = Math.round((h * pw) / w);
     const pc = makeCanvas(pw, ph);
     const pctx = pc.getContext('2d');
@@ -56,14 +99,11 @@ export class FrameStore {
       canvasToBlob(tc, 'image/jpeg', 0.78),
       createImageBitmap(pc),
     ]);
-    const id = await library.addFrame(projectId, { full, preview, thumb, w, h, luma });
-    this.lumas.set(id, luma);
-    this._set(`${id}:preview`, bitmap);
-    return { id, w, h };
+    return { preview, thumb, luma, bitmap };
   }
 
   /** Returns the cached bitmap or null, scheduling a load when missing. */
-  peek(id, kind = 'preview') {
+  peek(id, kind = this.displayKind) {
     const key = `${id}:${kind}`;
     const bmp = this.cache.get(key);
     if (bmp) {
@@ -75,7 +115,7 @@ export class FrameStore {
     return null;
   }
 
-  load(id, kind = 'preview') {
+  load(id, kind = this.displayKind) {
     const key = `${id}:${kind}`;
     if (this.cache.has(key)) return Promise.resolve(this.cache.get(key));
     if (this.pending.has(key)) return this.pending.get(key);
@@ -150,21 +190,29 @@ export class FrameStore {
   }
 
   _set(key, bmp) {
+    const size = (b) => b.width * b.height * 4;
     const old = this.cache.get(key);
-    if (old && old !== bmp) old.close?.();
+    if (old) {
+      this.bytes -= size(old);
+      if (old !== bmp) old.close?.();
+    }
     this.cache.delete(key);
     this.cache.set(key, bmp);
-    while (this.cache.size > this.maxCache) {
+    this.bytes += size(bmp);
+    // Least recently used first; always keep at least a few frames.
+    while (this.bytes > this.maxBytes && this.cache.size > 8) {
       const [k, b] = this.cache.entries().next().value;
       this.cache.delete(k);
+      this.bytes -= size(b);
       b.close?.();
     }
   }
 
   forget(id) {
-    for (const kind of ['preview', 'full']) {
+    for (const kind of ['preview', 'assist', 'full']) {
       const key = `${id}:${kind}`;
-      this.cache.get(key)?.close?.();
+      const b = this.cache.get(key);
+      if (b) { this.bytes -= b.width * b.height * 4; b.close?.(); }
       this.cache.delete(key);
     }
     const url = this.thumbUrls.get(id);
@@ -178,6 +226,7 @@ export class FrameStore {
     this.lumas.clear();
     for (const b of this.cache.values()) b.close?.();
     this.cache.clear();
+    this.bytes = 0;
     for (const url of this.thumbUrls.values()) URL.revokeObjectURL(url);
     this.thumbUrls.clear();
   }

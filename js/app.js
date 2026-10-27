@@ -5,15 +5,27 @@ import {
 import { library } from './library.js';
 import { pendingBrowserProjects, migrateProject } from './migrate.js';
 import { Camera } from './camera.js';
-import { FrameStore } from './framestore.js';
+import { FrameStore, isRawFile } from './framestore.js';
 import { History } from './history.js';
-import { AudioTrack } from './audio.js';
-import { Viewer } from './viewer.js';
+import { AudioMix, TRACK_COLORS, encodeWav, exposureLevels } from './audio.js';
+import { MOUTHS, mouthFor, mouthLabel, draftMouths } from './lipsync.js';
+import { buildReviewPackage, parseReviewNotes } from './review.js';
+import { LEARN_STEPS, currentStep } from './learn.js';
+import { Rig, defaultLighting, defaultMoco } from './rig.js';
+import { setupI18n, currentLang, saveLang, LANGS, t } from './i18n.js';
+
+// Before anything else is drawn, so the whole interface comes up in the chosen language.
+setupI18n();
+import { createViewer } from './viewer-gl.js';
+import { ACTIONS, Keymap, comboOf, comboLabel } from './shortcuts.js';
+import { XSheetView, xsheetToCSV, xsheetFromCSV, xsheetTableHTML } from './xsheet.js';
+import { openMonitor } from './monitor.js';
+import { ANALYSIS_W, compareFrames, grayOf } from './assistant.js';
 import { Timeline } from './timeline.js';
 import {
   totalExposures, expandExposures, exposureStart, formatTime, moveItems, computeSpacing,
 } from './timing.js';
-import { supportedVideoTypes, renderVideo, buildImageSequence, outputSize } from './exporter.js';
+import { supportedVideoTypes, renderVideo, buildImageSequence, outputSize, streamFrames } from './exporter.js';
 import { exportProjectFile, importProjectFile } from './projectio.js';
 import { deflickerGains, gradeFilter } from './grading.js';
 import { saveFile, isAndroidApp, isDesktopApp, isApp } from './platform.js';
@@ -22,11 +34,15 @@ const LS_LAST = 'mesora.lastProject';
 const LS_CAMERA = 'mesora.camera';
 const LS_WELCOMED = 'mesora.welcomed';
 const LS_SECTIONS = 'mesora.sections';
+const LS_UPDATE_CHECK = 'mesora.updateCheck';
+const LS_KEYS = 'mesora.keys';
+const LS_UI_MODE = 'mesora.uiMode';
+const LS_WORKSPACE = 'mesora.workspace';
 const GRID_CYCLE = ['none', 'thirds', 'quarters', 'fine', 'center'];
 
 function defaultSettings() {
   return {
-    onion: { enabled: true, count: 1, opacity: 0.4 },
+    onion: { enabled: true, count: 1, opacity: 0.4, next: 0, colors: false, blend: 'normal' },
     mode: 'normal',
     blinkRate: 4,
     chroma: { color: '#00b140', threshold: 0.12, softness: 0.06, bgBlobId: null },
@@ -46,6 +62,14 @@ function defaultSettings() {
     quality: 0.95,
     delay: 0,
     shutterSound: true,
+    tether: { folder: '', assist: true },
+    assistant: { enabled: true, live: true, sensitivity: 'normal' },
+    lipsync: { characters: [], active: '', hud: true },
+    lighting: defaultLighting(),
+    moco: defaultMoco(),
+    xsheet: { animator: '', length: 48, plan: {} },
+    playSpeed: 1,
+    display: 'preview',
     shortPlay: 6,
     loop: false,
     pingpong: false,
@@ -60,7 +84,7 @@ function newProject(name, fps = 12) {
   const now = Date.now();
   return {
     id: uid(), name, fps, width: 1920, height: 1080,
-    frames: [], audio: null, guides: [], settings: defaultSettings(),
+    frames: [], audio: null, tracks: [], guides: [], settings: defaultSettings(),
     createdAt: now, updatedAt: now,
   };
 }
@@ -85,6 +109,7 @@ const els = {
   takeLabel: $('#takeLabel'),
   saveState: $('#saveState'),
   hudNote: $('#hudNote'),
+  hudAssist: $('#hudAssist'),
   frameNote: $('#frameNote'),
   refInfo: $('#refInfo'),
   camDevice: $('#camDevice'),
@@ -104,7 +129,7 @@ const els = {
   fps: $('#fpsSelect'),
   projectInfo: $('#projectInfo'),
   audioInfo: $('#audioInfo'),
-  audioOffset: $('#audioOffset'),
+  hudMouth: $('#hudMouth'),
   blink: $('#btnBlink'),
   draw: $('#btnDraw'),
   loupeChk: $('#chkLoupe'),
@@ -145,8 +170,15 @@ const player = {
 const camera = new Camera($('#video'));
 const store = new FrameStore({ onLoad: () => { state.dirty = true; } });
 const history = new History();
-const audio = new AudioTrack();
-const viewer = new Viewer({
+const audio = new AudioMix();
+const rig = new Rig({
+  settings: () => S(),
+  save: () => saveSoon(),
+  toast,
+  nextExposure: () => totalExposures(frames()) + 1,
+  onBusy: (text) => { state.rigBusy = text; updateHudFlags(); },
+});
+const viewer = createViewer({
   area: els.area, stage: els.stage, main: $('#mainCanvas'), overlay: $('#overlayCanvas'),
   guides: els.guides, loupe: els.loupe,
 });
@@ -202,6 +234,7 @@ async function openProject(p, report = null) {
   history.clear();
   p.settings = withDefaults(p.settings, defaultSettings());
   p.guides ??= [];
+  p.tracks = normalizeTracks(p);
   p.frames = (p.frames || []).map((f) => ({ key: f.key || uid(), id: f.id, hold: f.hold || 1, ...(f.note ? { note: f.note } : {}) }));
   state.gains = new Map();
   state.project = p;
@@ -216,6 +249,9 @@ async function openProject(p, report = null) {
   if (!p.frames.length && camera.active) { p.width = camera.width; p.height = camera.height; }
   viewer.setSize(p.width, p.height);
   applySettingsToUI();
+  renderLipSync();
+  rig.invalidate();
+  rig.render();
   renderTimeline();
   await restoreAudio();
   await restoreChromaBg();
@@ -225,6 +261,8 @@ async function openProject(p, report = null) {
   updateProjectInfo();
   store.collectGarbage(p.id, p.frames.map((f) => f.id)).catch(() => {});
   showRecoveryReport(report);
+  applyDisplayKind();
+  restoreTether();
 }
 
 function updateTakeLabel() {
@@ -265,6 +303,7 @@ function loop(now) {
   if (!state.dirty && !liveCam && !state.blink) return;
   state.dirty = false;
   compose(now);
+  viewer.flush();
   const s = S();
   if (s.histogram && now - state.lastHist > 200) {
     state.lastHist = now;
@@ -273,22 +312,38 @@ function loop(now) {
   if (state.loupe && state.loupePos) updateLoupe();
 }
 
-/** Colour grade + deflicker filter for the frame at `index`. */
-function frameFilter(index) {
+/** Colour grade + deflicker gain for the frame at `index`, or null when nothing changes. */
+function frameGrade(index) {
   const g = S().grade;
   const f = frames()[index];
   const gain = g.deflicker && f ? state.gains.get(f.key) ?? 1 : 1;
-  return gradeFilter(g, gain);
+  const grade = { brightness: g.brightness * gain, contrast: g.contrast, saturation: g.saturation };
+  return gradeFilter(grade) === 'none' ? null : grade;
 }
 
-function drawOnion(fromIndex) {
+/** Canvas filter string of the same grade, used when exporting. */
+function frameFilter(index) {
+  return gradeFilter(frameGrade(index) || {});
+}
+
+const ONION_PREV_TINT = [1, 0.5, 0.5];
+const ONION_NEXT_TINT = [0.5, 1, 0.6];
+
+/**
+ * Onion skin around `current` (the frame shown, or frames().length when live):
+ * earlier frames, and later ones when reviewing. Nearer frames are more opaque.
+ */
+function drawOnion(current) {
   const s = S().onion;
   const fr = frames();
-  for (let k = s.count - 1; k >= 0; k--) {
-    const idx = fromIndex - k;
-    if (idx < 0) continue;
+  const op = s.blend === 'lighten' || s.blend === 'darken' ? s.blend : 'source-over';
+  const layer = (idx, k, n, tint) => {
     const bmp = store.peek(fr[idx].id);
-    if (bmp) viewer.draw(bmp, bmp.width, bmp.height, { alpha: (s.opacity * (s.count - k)) / s.count });
+    if (bmp) viewer.draw(bmp, bmp.width, bmp.height, { alpha: (s.opacity * (n - k)) / n, op, tint: s.colors ? tint : null });
+  };
+  for (let k = s.count - 1; k >= 0; k--) if (current - 1 - k >= 0) layer(current - 1 - k, k, s.count, ONION_PREV_TINT);
+  if (current < fr.length) {
+    for (let k = s.next - 1; k >= 0; k--) if (current + 1 + k < fr.length) layer(current + 1 + k, k, s.next, ONION_NEXT_TINT);
   }
 }
 
@@ -305,7 +360,7 @@ function compose(now) {
     const bmp = f && store.peek(f.id);
     if (!bmp) return;
     v.clear();
-    v.draw(bmp, bmp.width, bmp.height, { filter: frameFilter(player.index) });
+    v.draw(bmp, bmp.width, bmp.height, { grade: frameGrade(player.index) });
     if (keyed) v.chroma(s.chroma, state.chromaBg);
     drawReference(player.exposure);
     return;
@@ -325,7 +380,9 @@ function compose(now) {
     } else {
       v.clear();
       v.draw(video, camera.width, camera.height, flip);
-      if (s.onion.enabled && fr.length) drawOnion(fr.length - 1);
+      if (state.compareTest && state.testShot) {
+        v.draw(state.testShot, state.testShot.width, state.testShot.height, { clip: [0.5, 1] });
+      } else if (s.onion.enabled && fr.length) drawOnion(fr.length);
     }
   } else {
     const i = state.playhead;
@@ -337,8 +394,8 @@ function compose(now) {
       v.draw(prev, prev.width, prev.height);
       v.draw(bmp, bmp.width, bmp.height, { op: 'difference' });
     } else {
-      v.draw(bmp, bmp.width, bmp.height, { filter: frameFilter(i) });
-      if (s.onion.enabled && i > 0) drawOnion(i - 1);
+      v.draw(bmp, bmp.width, bmp.height, { grade: frameGrade(i) });
+      if (s.onion.enabled) drawOnion(i);
     }
   }
   if (keyed) v.chroma(s.chroma, state.chromaBg);
@@ -391,17 +448,22 @@ function startPlayback({ start = 0, end = frames().length, loop = S().loop, ping
   });
   playAudioFrom(0);
   for (let k = 0; k < Math.min(24, exposures.length); k++) store.load(fr[exposures[k]].id);
+  coach.played = true;
   refresh();
 }
+
+/** Review speed (studio mode): 1, 0.5 or 0.25. The project frame rate does not change. */
+const playSpeed = () => (document.body.classList.contains('mode-studio') ? S().playSpeed || 1 : 1);
 
 function playAudioFrom(pos) {
   if (!audio.ready || player.pingpong) return;
   const p = P();
-  audio.play((player.startExposure + pos - (p.audio?.offset || 0)) / p.fps);
+  const speed = playSpeed();
+  audio.play((player.startExposure + pos) / p.fps, undefined, speed);
 }
 
 function tickPlayer(now) {
-  const fps = P().fps;
+  const fps = P().fps * playSpeed();
   const n = player.exposures.length;
   let step = Math.floor(((now - player.t0) * fps) / 1000);
   let pos;
@@ -541,8 +603,7 @@ function scrubAudio(index) {
   if (!audio.ready) return;
   const p = P();
   const fr = frames();
-  const t = (exposureStart(fr, index) - (p.audio?.offset || 0)) / p.fps;
-  audio.scrub(t, Math.max(fr[index].hold / p.fps, 0.08));
+  audio.scrub(exposureStart(fr, index) / p.fps, Math.max(fr[index].hold / p.fps, 0.08));
 }
 
 // ---------------------------------------------------------------- editing
@@ -561,6 +622,7 @@ function afterFramesChanged() {
   const keys = new Set(fr.map((f) => f.key));
   for (const k of state.selection) if (!keys.has(k)) state.selection.delete(k);
   renderTimeline();
+  renderXSheet();
   saveSoon();
   scheduleGains();
   refresh();
@@ -589,7 +651,8 @@ const scheduleGains = debounce(async () => {
 
 function drawWave() {
   const p = P();
-  timeline.drawWave(audio, p.fps, p.audio?.offset || 0, totalExposures(p.frames));
+  const layers = p.tracks.map((t, i) => ({ peaks: audio.peaksOf(t.blobId), offset: t.offset || 0, color: trackColor(i), muted: t.muted }));
+  timeline.drawWave(layers, p.fps, totalExposures(p.frames), audio.duration);
 }
 
 function deleteSelected() {
@@ -682,8 +745,12 @@ function flash() {
 // so rapid captures are never dropped.
 let saveChain = Promise.resolve();
 
-async function capture(mode = 'append', { skipDelay = false } = {}) {
+async function capture(mode = 'append', { skipDelay = false, hold = 1 } = {}) {
   if (state.busy) return;
+  if (!camera.active && state.tether) {
+    toast('Dispara con tu cámara o desde su programa: la foto entrará sola en MESORA.', 'info', 4000);
+    return;
+  }
   if (!camera.active) { toast('Conecta una cámara para capturar', 'warn'); return; }
   if (player.playing) stopPlayback(false);
   const project = P();
@@ -693,6 +760,12 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
   try {
     if (s.delay > 0 && !skipDelay) await countdown(s.delay);
     if (!camera.active) return;
+    try {
+      await rig.prepare(exposureForCapture(mode));
+    } catch (err) {
+      toast(`No se hizo la foto: la luz o el movimiento no están listos (${err.message})`, 'error', 7000);
+      return;
+    }
     canvas = await camera.grab({ average: s.average, flipH: s.flipH, flipV: s.flipV });
   } catch (err) {
     toast(`Error al capturar: ${err.message}`, 'error', 4500);
@@ -711,7 +784,7 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
     if (!frames().length) setProjectSize(canvas.width, canvas.height);
     const { id } = await store.addFromCanvas(project.id, canvas, { format: s.format, quality: s.quality });
     if (P() !== project) return;
-    const entry = { key: uid(), id, hold: 1 };
+    const entry = { key: uid(), id, hold };
     commit((fr) => {
       const at = state.playhead;
       if (mode === 'replace' && at < fr.length) {
@@ -729,6 +802,8 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
         state.selection = new Set();
       }
     });
+    assistAfterShot(project, entry.key, canvas);
+    readyRigForNext();
   }).catch((err) => {
     console.error(err);
     const quota = err?.name === 'QuotaExceededError';
@@ -739,6 +814,439 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
   });
   saveChain = job;
   return job;
+}
+
+/** Exposure (1-based) that a capture in `mode` will occupy. */
+function exposureForCapture(mode) {
+  const fr = frames();
+  const at = state.playhead;
+  if (mode === 'replace' && at < fr.length) return exposureStart(fr, at) + 1;
+  if (mode === 'insert' && at < fr.length) return exposureStart(fr, at) + fr[at].hold + 1;
+  return totalExposures(fr) + 1;
+}
+
+/** After a photo, lights and axes go to the next exposure while the animator works. */
+function readyRigForNext() {
+  rig.prepare(totalExposures(frames()) + 1).catch((err) => toast(`Luz o movimiento: ${err.message}`, 'error', 7000));
+}
+
+// ---------------------------------------------------------------- photo camera (tethering folder)
+
+const cameraApi = window.mesoraDesktop?.camera;
+
+/** Shows camera photos or the matching video-assist frames (desktop only). */
+function applyDisplayKind() {
+  store.displayKind = library.kind === 'disk' && S().display === 'assist' ? 'assist' : 'preview';
+  state.dirty = true;
+}
+
+function updateTetherUI() {
+  if (!cameraApi) return;
+  const folder = state.tether;
+  $('#tetherInfo').textContent = folder ? `Esperando fotos en: ${folder}` : 'No se está vigilando ninguna carpeta.';
+  $('#btnTether').textContent = folder ? 'Cambiar carpeta…' : 'Elegir carpeta…';
+  $('#btnTetherStop').hidden = !folder;
+  updateCamUI();
+}
+
+async function watchFolder(folder) {
+  try {
+    await cameraApi.watch(P().id, folder);
+    state.tether = folder;
+  } catch (err) {
+    state.tether = null;
+    toast(`No se puede vigilar la carpeta: ${err.message}`, 'error', 6000);
+  }
+  updateTetherUI();
+}
+
+async function chooseTetherFolder() {
+  const folder = await cameraApi.chooseFolder();
+  if (!folder) return;
+  S().tether.folder = folder;
+  saveSoon();
+  await watchFolder(folder);
+  if (state.tether) toast('Listo: haz fotos con tu cámara y aparecerán aquí.', 'ok', 5000);
+}
+
+async function stopTether() {
+  await cameraApi.unwatch().catch(() => {});
+  S().tether.folder = '';
+  state.tether = null;
+  saveSoon();
+  updateTetherUI();
+}
+
+/** On opening a take, keeps watching the folder its scene uses (or stops). */
+async function restoreTether() {
+  if (!cameraApi) return;
+  const folder = S().tether.folder;
+  if (folder && folder === state.tether) await cameraApi.retarget(P().id);
+  else if (folder) await watchFolder(folder);
+  else if (state.tether) { await cameraApi.unwatch().catch(() => {}); state.tether = null; }
+  updateTetherUI();
+}
+
+/** A new photo arrived from the camera's tethering folder and is already stored on disk. */
+function onCameraPhoto({ key, id, display }) {
+  const project = P();
+  if (!project || project.id !== key) return;
+  state.pendingCaptures++;
+  updateSaveState();
+  const job = saveChain.then(async () => {
+    const r = await store.addIngested(key, id, display ? new Blob([display], { type: 'image/jpeg' }) : null);
+    if (P() !== project) return;
+    if (!frames().length) setProjectSize(r.w, r.h);
+    if (S().tether.assist && camera.active) {
+      const c = await camera.grab({ flipH: S().flipH, flipV: S().flipV });
+      await library.writeAssist(key, id, await canvasToBlob(c, 'image/jpeg', 0.9));
+    }
+    const entry = { key: uid(), id, hold: 1 };
+    commit((fr) => {
+      fr.push(entry);
+      state.playhead = fr.length;
+      state.selection = new Set();
+    });
+    flash();
+    assistAfterShot(project, entry.key);
+    readyRigForNext();
+  }).catch((err) => {
+    console.error(err);
+    toast(`No se pudo añadir la foto de la cámara: ${err.message}`, 'error', 6000);
+  }).finally(() => {
+    state.pendingCaptures--;
+    updateSaveState();
+  });
+  saveChain = job;
+}
+
+// ---------------------------------------------------------------- shooting assistant
+
+// Compares each new photo with the previous frame and warns about accidents.
+// It only reads images; what to do about a warning is always the user's call.
+const analyses = new Map(); // "project:frame" → small grey image, for the last few frames
+
+/** Small grey copy of an image, the size the assistant works at. */
+function analysisOf(source, w, h, { flipH = false, flipV = false } = {}) {
+  const aw = ANALYSIS_W;
+  const ah = Math.max(2, Math.round((aw * h) / w / 2) * 2);
+  const c = makeCanvas(aw, ah);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  if (flipH || flipV) {
+    ctx.translate(flipH ? aw : 0, flipV ? ah : 0);
+    ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+  }
+  ctx.drawImage(source, 0, 0, aw, ah);
+  return grayOf(ctx.getImageData(0, 0, aw, ah).data, aw, ah);
+}
+
+// Frame ids repeat between takes (c000001…), so the cache key includes the take.
+const analysisKey = (id) => `${store.projectId}:${id}`;
+
+function rememberAnalysis(id, img) {
+  const key = analysisKey(id);
+  analyses.delete(key);
+  analyses.set(key, img);
+  while (analyses.size > 6) analyses.delete(analyses.keys().next().value);
+}
+
+async function frameAnalysis(id, remember = true) {
+  const key = analysisKey(id);
+  if (analyses.has(key)) return analyses.get(key);
+  const bmp = await store.decode(id, store.displayKind, { resizeWidth: ANALYSIS_W, resizeQuality: 'medium' });
+  if (!bmp) return null;
+  const img = analysisOf(bmp, bmp.width, bmp.height);
+  bmp.close?.();
+  if (remember && key === analysisKey(id)) rememberAnalysis(id, img);
+  return img;
+}
+
+const assistOptions = (p, checks = null) => ({ sensitivity: p.settings.assistant.sensitivity, widthPx: p.width, checks });
+
+/** Goes to a frame and shows how it differs from the one before it. */
+function showDifferenceAt(key) {
+  const i = frames().findIndex((f) => f.key === key);
+  if (i < 0) return;
+  stopPlayback(false);
+  state.playhead = i;
+  state.selection = new Set([key]);
+  if (S().mode !== 'difference') setMode('difference');
+  renderTimeline();
+  refresh();
+}
+
+async function assistAfterShot(project, key, source = null) {
+  if (!project.settings.assistant.enabled) return;
+  try {
+    const fr = project.frames;
+    const i = fr.findIndex((f) => f.key === key);
+    if (i <= 0 || fr[i - 1].id === fr[i].id) return;
+    const b = source ? analysisOf(source, source.width, source.height) : await frameAnalysis(fr[i].id);
+    if (source) rememberAnalysis(fr[i].id, b);
+    const a = await frameAnalysis(fr[i - 1].id);
+    if (!a || !b || a.h !== b.h || P() !== project) return;
+    const { issues } = compareFrames(a, b, assistOptions(project));
+    if (!issues.length) return;
+    const actions = [{ label: 'Ver diferencia', onClick: () => showDifferenceAt(key) }];
+    if (issues.some((x) => x.type === 'exposure') && !project.settings.grade.deflicker) {
+      actions.push({ label: 'Compensar parpadeo', onClick: () => enableDeflicker(project) });
+    }
+    toast(`Fotograma ${i + 1}: ${issues.map((x) => x.text).join(' ')}`, 'warn', 9000, actions);
+  } catch (err) {
+    console.warn('Asistente de rodaje:', err);
+  }
+}
+
+/** Turns on the deflicker of playback and export (the photos themselves are not changed). */
+function enableDeflicker(project) {
+  if (P() !== project) return;
+  S().grade.deflicker = true;
+  applySettingsToUI();
+  onSettingChanged('grade.deflicker');
+  toast('Compensación de parpadeo activada: iguala la luz al reproducir y exportar. Las fotos no cambian. (Animar › Color y luz)', 'ok', 6000);
+}
+
+// Live watch: before shooting, compares the live view with the last frame
+// (light and camera position only, so hands at work do not trigger it).
+const liveWatch = { busy: false, last: '', streak: 0 };
+
+async function liveAssistTick() {
+  const el = els.hudAssist;
+  const p = P();
+  const fr = frames();
+  const on = p?.settings.assistant.live && camera.active && isLive() && !player.playing && fr.length && !document.hidden;
+  if (!on) { el.hidden = true; liveWatch.streak = 0; return; }
+  if (liveWatch.busy) return;
+  liveWatch.busy = true;
+  try {
+    const a = await frameAnalysis(fr[fr.length - 1].id);
+    if (!a || P() !== p || !camera.active) return;
+    const b = analysisOf(camera.video, camera.width, camera.height, { flipH: S().flipH, flipV: S().flipV });
+    if (a.h !== b.h) { el.hidden = true; return; }
+    const { issues } = compareFrames(a, b, assistOptions(p, ['bump', 'exposure']));
+    const sig = issues.map((x) => x.type).join();
+    // Only report what lasts for two checks in a row.
+    liveWatch.streak = sig === liveWatch.last ? liveWatch.streak + 1 : 0;
+    liveWatch.last = sig;
+    if (liveWatch.streak < 1) return;
+    el.hidden = !issues.length;
+    el.textContent = issues.map((x) => x.short).join(' · ');
+    el.title = issues.map((x) => x.text.replace('respecto al fotograma anterior', 'respecto al último fotograma')).join('\n');
+  } catch (err) {
+    console.warn('Vigilancia en vivo:', err);
+  } finally {
+    liveWatch.busy = false;
+  }
+}
+
+/** Checks every pair of consecutive frames of the take and lists what looks wrong. */
+async function reviewTake() {
+  const project = P();
+  const fr = frames().slice();
+  if (fr.length < 2) { toast('Hacen falta al menos 2 fotogramas para revisar la toma', 'info'); return; }
+  const btn = $('#btnReviewTake');
+  btn.disabled = true;
+  const found = [];
+  try {
+    let prev = null;
+    for (let i = 0; i < fr.length; i++) {
+      btn.textContent = `Revisando ${i + 1} / ${fr.length}…`;
+      const cur = await frameAnalysis(fr[i].id, false);
+      if (P() !== project) return;
+      if (prev && cur && prev.h === cur.h && fr[i].id !== fr[i - 1].id) {
+        const { issues } = compareFrames(prev, cur, assistOptions(project));
+        if (issues.length) found.push({ i, f: fr[i], issues });
+      }
+      prev = cur;
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Revisar toda la toma';
+  }
+  const items = found.map(({ i, f, issues }) => {
+    const li = document.createElement('li');
+    li.className = 'project-item';
+    li.innerHTML = `
+      <div class="thumb"></div>
+      <div class="info"><div class="name"></div><div class="sub"></div></div>
+      <div class="actions"><button class="btn" data-act="show">Ver</button></div>`;
+    li.querySelector('.name').textContent = `Fotograma ${i + 1}`;
+    li.querySelector('.sub').textContent = issues.map((x) => x.text).join(' ');
+    store.thumbUrl(f.id).then((url) => { if (url) li.querySelector('.thumb').style.backgroundImage = `url("${url}")`; });
+    li.querySelector('[data-act="show"]').addEventListener('click', () => { closeModal($('#modalList')); showDifferenceAt(f.key); });
+    return li;
+  });
+  showList('Revisión de la toma', found.length
+    ? `${found.length} ${found.length === 1 ? 'fotograma puede tener' : 'fotogramas pueden tener'} un problema. No se ha cambiado nada: «Ver» lo muestra en modo diferencia para que decidas.`
+    : 'No se encontraron problemas entre fotogramas consecutivos.', items);
+}
+
+// ---------------------------------------------------------------- lights and motion control
+
+function wireRig() {
+  const fail = (sel) => (err) => rig.status(sel, err.message, true);
+  for (const id of ['#lightList', '#lightKeys', '#lookSliders']) {
+    $(id).addEventListener('input', (e) => rig.onLightsInput(e));
+    $(id).addEventListener('change', (e) => rig.onLightsInput(e));
+  }
+  $('#lightList').addEventListener('click', (e) => rig.onListClick(e, () => S().lighting.lights, () => rig.renderLights()));
+  $('#lightKeys').addEventListener('click', (e) => rig.onListClick(e, () => S().lighting.keys, () => rig.renderLights()));
+  $('#btnAddLight').addEventListener('click', () => rig.addLight());
+  $('#btnAddLightKey').addEventListener('click', () => rig.addLightKey());
+  $('#btnAddLook').addEventListener('click', async () => {
+    const name = await askText('Nombre del look', `Look ${S().lighting.looks.length + 1}`);
+    if (name?.trim()) rig.addLook(name.trim());
+  });
+  $('#btnRenameLook').addEventListener('click', async () => {
+    const look = S().lighting.looks.find((k) => k.id === rig.editLook);
+    const name = look && await askText('Nuevo nombre del look', look.name);
+    if (!name?.trim()) return;
+    look.name = name.trim();
+    rig.changed();
+    rig.renderLights();
+  });
+  $('#lookSelect').addEventListener('change', (e) => {
+    rig.editLook = e.target.value;
+    rig.renderLights();
+    const look = S().lighting.looks.find((k) => k.id === rig.editLook);
+    if (look && $('#lookLive').checked && S().lighting.output !== 'none') rig.sendLevels({ ...look.levels }).catch(fail('#dmxStatus'));
+  });
+  $('#btnDmxConnect').addEventListener('click', () => rig.connectDmx().catch(fail('#dmxStatus')));
+  for (const id of ['#axisList', '#axisKeys']) {
+    $(id).addEventListener('input', (e) => rig.onAxesInput(e));
+    $(id).addEventListener('change', (e) => rig.onAxesInput(e));
+    $(id).addEventListener('click', (e) => rig.onAxesClick(e));
+  }
+  $('#btnAddAxis').addEventListener('click', () => rig.addAxis());
+  $('#btnAddAxisKey').addEventListener('click', () => rig.addAxisKeys());
+  $('#btnMocoConnect').addEventListener('click', () => rig.connectMoco().catch(fail('#mocoStatus')));
+  $('#btnMocoZero').addEventListener('click', () => rig.zero().catch(fail('#mocoStatus')));
+}
+
+// ---------------------------------------------------------------- automatic backup (desktop)
+
+const backupApi = window.mesoraDesktop?.backup;
+let backupErrorShown = 0;
+
+function updateBackupUI(st) {
+  const info = $('#backupInfo');
+  $('#btnBackupChoose').textContent = st.folder ? 'Cambiar carpeta…' : 'Elegir carpeta…';
+  $('#btnBackupNow').hidden = !st.folder;
+  $('#btnBackupOff').hidden = !st.folder;
+  $('#btnBackupNow').disabled = st.running;
+  const l = st.last;
+  info.classList.toggle('error-text', !!l?.error && !st.running);
+  if (!st.folder) info.textContent = 'Sin copia de seguridad. Elige una carpeta para activarla.';
+  else if (st.running) info.textContent = `Copiando en ${st.target}…`;
+  else if (l?.error) info.textContent = `La última copia falló (${formatDate(l.at)}): ${l.error}`;
+  else if (l) info.textContent = `Copia en ${st.target} · última: ${formatDate(l.at)}, ${l.copied} de ${l.files} archivos nuevos o cambiados.`;
+  else info.textContent = `Copia en ${st.target} · la primera se hará en un momento.`;
+  if (l?.error && !st.running && backupErrorShown !== l.at) {
+    backupErrorShown = l.at;
+    toast(`No se pudo hacer la copia de seguridad: ${l.error}`, 'error', 8000);
+  }
+}
+
+async function backupAction(fn) {
+  try {
+    updateBackupUI(await fn());
+  } catch (err) {
+    toast(err.message, 'error', 7000);
+  }
+}
+
+// ---------------------------------------------------------------- phone remote / local API (desktop)
+
+const remoteApi = window.mesoraDesktop?.remote;
+const remote = { on: false, active: false, lastState: '', previewBusy: false };
+
+async function toggleRemote() {
+  const btn = $('#btnRemote');
+  btn.disabled = true;
+  try {
+    if (remote.on) {
+      await remoteApi.stop();
+      remote.on = false;
+      remote.active = false;
+    } else {
+      const info = await remoteApi.start();
+      remote.on = true;
+      $('#remoteQr').src = `data:image/svg+xml;base64,${btoa(info.qr)}`;
+      $('#remoteUrl').textContent = info.url;
+      pushRemoteState(true);
+    }
+  } catch (err) {
+    toast(`No se pudo activar el mando: ${err.message}`, 'error', 6000);
+  } finally {
+    btn.disabled = false;
+    updateRemoteUI();
+  }
+}
+
+function updateRemoteUI() {
+  $('#btnRemote').textContent = remote.on ? 'Desactivar el mando' : 'Activar el mando';
+  $('#remoteBox').hidden = !remote.on;
+  $('#remoteState').textContent = remote.active ? 'Móvil conectado.' : 'Ningún móvil conectado todavía.';
+}
+
+/** What the phone shows: where we are in the take. */
+function remoteState() {
+  const p = P();
+  const fr = frames();
+  return {
+    project: p.name, take: p.scene ? `${p.scene.name} · ${p.take.name}` : '',
+    frames: fr.length, position: Math.min(state.playhead, fr.length - 1) + 1,
+    live: isLive(), playing: player.playing, fps: p.fps, camera: camera.active,
+  };
+}
+
+function pushRemoteState(force = false) {
+  if (!remote.on || !P()) return;
+  const s = remoteState();
+  const json = JSON.stringify(s);
+  if (!force && json === remote.lastState) return;
+  remote.lastState = json;
+  remoteApi.state(s);
+}
+
+/** Small copy of the viewer for the phone, only while one is connected. */
+async function pushRemotePreview() {
+  if (!remote.on || !remote.active || remote.previewBusy) return;
+  remote.previewBusy = true;
+  try {
+    const src = $('#mainCanvas');
+    const w = 480;
+    const c = makeCanvas(w, (w * src.height) / src.width || 270);
+    c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+    const blob = await canvasToBlob(c, 'image/jpeg', 0.7);
+    remoteApi.preview(new Uint8Array(await blob.arrayBuffer()));
+  } catch (err) {
+    console.warn('Vista previa para el móvil:', err);
+  } finally {
+    remote.previewBusy = false;
+  }
+}
+
+// ---------------------------------------------------------------- test shot (A/B)
+
+/** A photo to check exposure, focus or framing; it is not added to the animation. */
+async function takeTestShot() {
+  if (!camera.active) { toast('Conecta una cámara para hacer una foto de prueba', 'warn'); return; }
+  const c = await camera.grab({ average: S().average, flipH: S().flipH, flipV: S().flipV });
+  state.testShot?.close?.();
+  state.testShot = await createImageBitmap(c);
+  state.compareTest = true;
+  $('#btnCompareTest').classList.add('on');
+  $('#btnCompareTest').disabled = false;
+  state.dirty = true;
+  toast('Foto de prueba hecha. A la derecha ves la prueba y a la izquierda la cámara en vivo.', 'ok', 5000);
+}
+
+function toggleCompareTest() {
+  if (!state.testShot) return;
+  state.compareTest = !state.compareTest;
+  $('#btnCompareTest').classList.toggle('on', state.compareTest);
+  state.dirty = true;
 }
 
 // ---------------------------------------------------------------- camera
@@ -763,7 +1271,7 @@ async function refreshDevices() {
   if (devices.some((d) => d.deviceId === current)) els.camDevice.value = current;
 }
 
-async function startCamera() {
+async function startCamera({ quiet = false } = {}) {
   if (!Camera.supported) {
     toast('Este navegador no permite usar la cámara (se necesita HTTPS o localhost)', 'error', 5000);
     return;
@@ -779,7 +1287,7 @@ async function startCamera() {
       : err.name === 'NotReadableError' ? 'La cámara está en uso por otra aplicación'
       : `No se pudo abrir la cámara: ${err.message}`;
     els.stageEmptyMsg.textContent = msg;
-    toast(msg, 'error', 4500);
+    if (!quiet) toast(msg, 'error', 4500);
     updateCamUI();
     return;
   }
@@ -812,15 +1320,30 @@ function stopCamera() {
 }
 
 camera.onEnded = () => {
-  toast('Se perdió la señal de la cámara', 'error');
   stopCamera();
+  reconnectCamera();
 };
+
+/** After the camera signal is lost (cable, sleep…), keeps trying to open it again for a minute. */
+async function reconnectCamera() {
+  if (state.reconnecting) return;
+  state.reconnecting = true;
+  toast('Se perdió la señal de la cámara. Intentando reconectar…', 'warn', 5000);
+  for (let i = 0; i < 30 && state.reconnecting && !camera.active; i++) {
+    await sleep(2000);
+    if (state.reconnecting) await startCamera({ quiet: true });
+  }
+  if (!state.reconnecting) return;
+  state.reconnecting = false;
+  if (camera.active) toast('Cámara reconectada', 'ok');
+  else toast('No se pudo reconectar la cámara. Revisa el cable y pulsa Conectar.', 'error', 7000);
+}
 
 function updateCamUI() {
   const on = camera.active;
   els.camToggle.textContent = on ? 'Desconectar' : 'Conectar';
   els.camInfo.textContent = on ? camera.info() : 'Sin señal';
-  els.capture.disabled = !on;
+  els.capture.disabled = !on && !state.tether;
   updateStageEmpty();
 }
 
@@ -911,6 +1434,7 @@ const fmtNum = (v) => (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 100) 
 function refresh() {
   state.dirty = true;
   timeline.update({ playhead: state.playhead, selection: state.selection, playingIndex: player.playing ? player.index : -1 });
+  if (document.body.classList.contains('ws-xsheet')) xsheetView.setCurrent(player.playing ? player.index : isLive() ? -1 : state.playhead);
   updateHud();
   updateTransport();
   updateStageEmpty();
@@ -961,12 +1485,15 @@ function updateHud(exposure) {
     els.hudFrame.textContent = `Fotograma ${state.playhead + 1} / ${fr.length}`;
     els.hudTime.textContent = `${formatTime(exposureStart(fr, state.playhead), fps)} / ${formatTime(total, fps)}`;
   }
+  // Exposure being shot (live) or shown, 1-based like the X-Sheet.
+  const at = player.playing ? (exposure ?? player.exposure) : isLive() ? total : exposureStart(fr, state.playhead);
+  updateHudMouth(at + 1).catch(() => {});
 }
 
 function updateHudFlags() {
   const s = S();
   const flags = [];
-  if (s.onion.enabled) flags.push(`Cebolla ×${s.onion.count}`);
+  if (s.onion.enabled) flags.push(`Cebolla ×${s.onion.count}${s.onion.next ? ` +${s.onion.next}` : ''}`);
   if (s.mode === 'difference') flags.push('Diferencia');
   if (s.mode === 'chroma') flags.push('Croma');
   if (state.blink) flags.push('Parpadeo');
@@ -975,6 +1502,7 @@ function updateHudFlags() {
   if (s.delay > 0) flags.push(`Retardo ${s.delay}s`);
   if (state.timelapseTimer) flags.push(`Intervalómetro ${s.timelapseInterval}s`);
   if (state.drawing) flags.push('Dibujando guías');
+  if (state.rigBusy) flags.push(state.rigBusy);
   els.hudFlags.innerHTML = '';
   for (const f of flags) {
     const span = document.createElement('span');
@@ -1004,7 +1532,7 @@ function updateProjectInfo() {
 }
 
 function setFpsUI(fps) {
-  if (![...els.fps.options].some((o) => Number(o.value) === fps)) els.fps.append(new Option(`${fps} fps`, fps));
+  if (![...els.fps.options].some((o) => Number(o.value) === fps)) els.fps.insertBefore(new Option(`${fps} fps`, fps), els.fps.querySelector('[value="custom"]'));
   els.fps.value = String(fps);
 }
 
@@ -1067,6 +1595,14 @@ function onSettingChanged(path) {
   if (path === 'zoom') renderTimeline();
   if (path === 'timelapseInterval' && state.timelapseTimer) { stopTimelapse(); startTimelapse(); }
   if (path === 'grade.deflicker') { state.gains = new Map(); scheduleGains(); }
+  if (path === 'display') applyDisplayKind();
+  if (path.startsWith('xsheet.')) renderXSheet();
+  if (path.startsWith('lipsync.')) updateHud();
+  if (path.startsWith('lighting.') || path.startsWith('moco.')) {
+    rig.invalidate();
+    if (path === 'moco.output' || ((path === 'moco.speed' || path === 'moco.accel') && rig.moco)) rig.disconnectMoco();
+    rig.updateOutputUI();
+  }
   updateHudFlags();
   updateTransport();
 }
@@ -1186,57 +1722,281 @@ els.guides.addEventListener('pointercancel', endStroke);
 
 // ---------------------------------------------------------------- audio
 
+const trackColor = (i) => TRACK_COLORS[i % TRACK_COLORS.length];
+
+/** Projects from before multitrack sound had a single `audio`; it becomes the first track. */
+function normalizeTracks(p) {
+  if (Array.isArray(p.tracks)) return p.tracks;
+  const a = p.audio;
+  p.audio = null;
+  return a?.blobId ? [{ id: uid(), blobId: a.blobId, name: (a.name || 'Audio').replace(/\.[^.]+$/, ''), offset: a.offset || 0, volume: 1, muted: false }] : [];
+}
+
 async function restoreAudio() {
-  audio.clear();
-  const a = P().audio;
-  if (a?.blobId) {
+  const p = P();
+  audio.setTracks(p.tracks, p.fps);
+  for (const t of p.tracks) {
+    if (audio.has(t.blobId)) continue;
     try {
-      const rec = await library.getBlob(P().id, a.blobId);
-      if (rec) await audio.load(rec.blob);
+      const rec = await library.getBlob(p.id, t.blobId);
+      if (P() !== p) return;
+      if (rec) await audio.decode(t.blobId, rec.blob);
+      else toast(`No se encuentra el archivo de la pista «${t.name}»`, 'error', 6000);
     } catch (err) {
-      toast(`No se pudo cargar el audio: ${err.message}`, 'error');
+      toast(`No se pudo cargar la pista «${t.name}»: ${err.message}`, 'error');
     }
   }
-  updateAudioUI();
+  if (P() !== p) return;
+  renderTracks();
   drawWave();
 }
 
-async function loadAudioFile(file) {
+/** Adds a sound file (dialogue, music, effects) as a new track starting at exposure 1. */
+async function addAudioTrack(file) {
   const project = P();
+  const blobId = uid();
   try {
-    await audio.load(file);
+    await audio.decode(blobId, file);
   } catch {
-    toast('Formato de audio no soportado', 'error');
+    toast(`Formato de audio no soportado: ${file.name}`, 'error');
     return;
   }
-  const id = uid();
-  await library.putBlob(project.id, { id, name: file.name, blob: file });
-  if (project.audio?.blobId) library.deleteBlob(P().id, project.audio.blobId).catch(() => {});
-  project.audio = { blobId: id, name: file.name, offset: 0 };
+  await library.putBlob(project.id, { id: blobId, name: file.name, blob: file });
+  if (P() !== project) return;
+  project.tracks.push({ id: uid(), blobId, name: file.name.replace(/\.[^.]+$/, ''), offset: 0, volume: 1, muted: false });
+  audio.setTracks(project.tracks, project.fps);
   saveSoon();
-  updateAudioUI();
+  renderTracks();
   drawWave();
-  toast(`Audio cargado: ${file.name}`, 'ok');
+  toast(`Pista añadida: ${file.name}`, 'ok');
 }
 
-function clearAudio() {
+function removeTrack(id) {
   const p = P();
-  if (p.audio?.blobId) library.deleteBlob(P().id, p.audio.blobId).catch(() => {});
-  p.audio = null;
-  audio.clear();
+  const t = p.tracks.find((x) => x.id === id);
+  if (!t || !confirm(`¿Quitar la pista «${t.name}»?`)) return;
+  p.tracks.splice(p.tracks.indexOf(t), 1);
+  if (!p.tracks.some((x) => x.blobId === t.blobId)) library.deleteBlob(p.id, t.blobId).catch(() => {});
+  audio.setTracks(p.tracks, p.fps);
   saveSoon();
-  updateAudioUI();
+  renderTracks();
   drawWave();
 }
 
-function updateAudioUI() {
-  const a = P().audio;
-  if (a && audio.ready) {
-    els.audioInfo.textContent = `${a.name} · ${audio.duration.toFixed(2)} s (${Math.ceil(audio.duration * P().fps)} exposiciones a ${P().fps} fps)`;
-  } else {
-    els.audioInfo.textContent = 'Sin pista de audio. Al moverte por los fotogramas escucharás el fragmento correspondiente.';
+/** A track setting changed: save, redraw and, while playing, hear it at once. */
+function trackChanged() {
+  saveSoon();
+  drawWave();
+  updateAudioInfo();
+  if (player.playing && !player.pingpong) playAudioFrom(player.exposure - player.startExposure);
+}
+
+function updateAudioInfo() {
+  const p = P();
+  const n = p.tracks.length;
+  els.audioInfo.textContent = n
+    ? `${n} ${n === 1 ? 'pista' : 'pistas'} · el sonido termina en ${audio.duration.toFixed(2)} s (exposición ${Math.ceil(audio.duration * p.fps)} a ${p.fps} fps)`
+    : 'Sin audio. Añade diálogo, música o efectos: al moverte por los fotogramas escucharás el fragmento correspondiente.';
+}
+
+function renderTracks() {
+  const p = P();
+  const ul = $('#trackList');
+  ul.innerHTML = '';
+  p.tracks.forEach((t, i) => {
+    const li = document.createElement('li');
+    li.className = `track${t.muted ? ' muted' : ''}`;
+    li.dataset.id = t.id;
+    li.innerHTML = `
+      <div class="track-head">
+        <span class="swatch" style="background:${trackColor(i)}"></span>
+        <input class="track-name" data-act="name" maxlength="60" aria-label="Nombre de la pista">
+        <button class="btn small toggle${t.muted ? ' active' : ''}" data-act="mute" title="Silenciar esta pista" aria-pressed="${!!t.muted}">Silenciar</button>
+        <button class="btn small ghost" data-act="remove" title="Quitar la pista">Quitar</button>
+      </div>
+      <div class="track-row">
+        <label title="Volumen de la pista">Vol. <input type="range" min="0" max="1.5" step="0.05" data-act="volume"></label>
+        <label title="Exposición en la que empieza a sonar (0 = desde el principio)">Desde exp. <input type="number" min="0" step="1" data-act="offset"></label>
+      </div>
+      <div class="muted small track-meta"></div>`;
+    li.querySelector('[data-act="name"]').value = t.name;
+    li.querySelector('[data-act="volume"]').value = t.volume ?? 1;
+    li.querySelector('[data-act="offset"]').value = t.offset || 0;
+    const d = audio.durationOf(t.blobId);
+    li.querySelector('.track-meta').textContent = d ? `${d.toFixed(2)} s · ${Math.ceil(d * p.fps)} exposiciones` : 'No se pudo cargar';
+    ul.append(li);
+  });
+  updateAudioInfo();
+  updateLipTrackSelect();
+}
+
+function onTrackInput(e) {
+  const li = e.target.closest('.track');
+  const t = li && P().tracks.find((x) => x.id === li.dataset.id);
+  if (!t) return;
+  const act = e.target.dataset.act;
+  if (act === 'name') { t.name = e.target.value.trim() || 'Pista'; saveSoon(); updateLipTrackSelect(); }
+  if (act === 'volume') { t.volume = Number(e.target.value); trackChanged(); }
+  if (act === 'offset' && e.type === 'change') {
+    t.offset = Math.max(0, Math.floor(Number(e.target.value) || 0));
+    e.target.value = t.offset;
+    trackChanged();
   }
-  els.audioOffset.value = a?.offset || 0;
+}
+
+function onTrackClick(e) {
+  const btn = e.target.closest('button[data-act]');
+  const li = e.target.closest('.track');
+  const t = li && P().tracks.find((x) => x.id === li.dataset.id);
+  if (!btn || !t) return;
+  if (btn.dataset.act === 'remove') removeTrack(t.id);
+  if (btn.dataset.act === 'mute') {
+    t.muted = !t.muted;
+    li.classList.toggle('muted', t.muted);
+    btn.classList.toggle('active', t.muted);
+    btn.setAttribute('aria-pressed', String(t.muted));
+    trackChanged();
+  }
+}
+
+// ---------------------------------------------------------------- lip sync
+
+const lip = () => S().lipsync;
+const activeCharacter = () => lip().characters.find((c) => c.id === lip().active) || lip().characters[0] || null;
+const mouthUrls = new Map(); // blobId → object URL
+
+async function mouthUrl(blobId) {
+  if (mouthUrls.has(blobId)) return mouthUrls.get(blobId);
+  const rec = await library.getBlob(P().id, blobId).catch(() => null);
+  const url = rec ? URL.createObjectURL(rec.blob) : '';
+  mouthUrls.set(blobId, url);
+  return url;
+}
+
+/** The mouth to put on for an exposure (1-based), from the X-Sheet «Fonema» column. */
+function mouthAt(exposure) {
+  const text = S().xsheet.plan?.[exposure]?.phoneme;
+  return mouthFor(text);
+}
+
+function renderLipSync() {
+  const l = lip();
+  const sel = $('#lipCharacter');
+  sel.innerHTML = '';
+  for (const c of l.characters) sel.add(new Option(c.name, c.id));
+  const c = activeCharacter();
+  sel.value = c?.id || '';
+  sel.disabled = !c;
+  $('#btnLipRename').disabled = !c;
+  const grid = $('#mouthGrid');
+  grid.innerHTML = '';
+  grid.hidden = !c;
+  if (!c) return;
+  for (const m of MOUTHS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mouth';
+    b.dataset.mouth = m.id;
+    b.title = `${m.label}: ${m.hint}. Pulsa para elegir la imagen de esta boca.`;
+    b.innerHTML = '<span class="img"></span><span class="lbl"></span>';
+    b.querySelector('.lbl').textContent = m.label;
+    const id = c.mouths?.[m.id];
+    if (id) mouthUrl(id).then((url) => { if (url) b.querySelector('.img').style.backgroundImage = `url("${url}")`; });
+    else b.querySelector('.img').textContent = '+';
+    grid.append(b);
+  }
+}
+
+function updateLipTrackSelect() {
+  const sel = $('#lipTrack');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const t of P().tracks) sel.add(new Option(t.name, t.id));
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  $('#btnLipDraft').disabled = !P().tracks.length;
+}
+
+async function addCharacter() {
+  const name = await askText('Nombre del personaje', `Personaje ${lip().characters.length + 1}`);
+  if (!name?.trim()) return;
+  const c = { id: uid(), name: name.trim(), mouths: {} };
+  lip().characters.push(c);
+  lip().active = c.id;
+  saveSoon();
+  renderLipSync();
+  updateHud();
+}
+
+async function renameCharacter() {
+  const c = activeCharacter();
+  if (!c) return;
+  const name = await askText('Nuevo nombre del personaje', c.name);
+  if (!name?.trim()) return;
+  c.name = name.trim();
+  saveSoon();
+  renderLipSync();
+}
+
+let mouthTarget = null;
+
+async function setMouthImage(file) {
+  const c = activeCharacter();
+  if (!c || !mouthTarget || !file.type.startsWith('image/')) return;
+  const project = P();
+  const blobId = uid();
+  await library.putBlob(project.id, { id: blobId, name: file.name, blob: file });
+  if (P() !== project) return;
+  c.mouths ??= {};
+  c.mouths[mouthTarget] = blobId;
+  saveSoon();
+  renderLipSync();
+  updateHud();
+}
+
+/**
+ * Fills the empty «Fonema» cells of the X-Sheet with a first draft from the
+ * loudness of a track. Cells already written are never changed.
+ */
+async function draftLipSync() {
+  const p = P();
+  const t = p.tracks.find((x) => x.id === $('#lipTrack').value) || p.tracks[0];
+  if (!t || !audio.has(t.blobId)) { toast('Añade primero la pista de diálogo', 'warn'); return; }
+  const { buffer } = audio.decoded.get(t.blobId);
+  const mono = new Float32Array(buffer.length);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = 0; i < d.length; i++) mono[i] += d[i] / buffer.numberOfChannels;
+  }
+  const mouths = draftMouths(exposureLevels(mono, buffer.sampleRate, p.fps));
+  const plan = S().xsheet.plan;
+  let filled = 0;
+  mouths.forEach((m, i) => {
+    const exposure = (t.offset || 0) + i + 1;
+    if (plan[exposure]?.phoneme) return;
+    plan[exposure] = { ...(plan[exposure] || {}), phoneme: m === 'rest' ? '-' : m };
+    filled++;
+  });
+  saveSoon();
+  renderXSheet();
+  updateHud();
+  toast(filled
+    ? `Borrador listo: ${filled} exposiciones con boca en el X-Sheet (columna Fonema). Es aproximado, por volumen: corrígelo a mano.`
+    : 'Todas las exposiciones de esa pista ya tenían fonema; no se cambió nada.', 'ok', 8000);
+}
+
+/** Mouth shown in the viewer for the exposure being shot or reviewed. */
+async function updateHudMouth(exposure) {
+  const el = els.hudMouth;
+  const m = lip().hud ? mouthAt(exposure) : null;
+  el.hidden = !m;
+  if (!m) return;
+  el.querySelector('b').textContent = `Boca: ${mouthLabel(m)}`;
+  const blobId = activeCharacter()?.mouths?.[m];
+  const img = el.querySelector('img');
+  const url = blobId ? await mouthUrl(blobId) : '';
+  img.hidden = !url;
+  if (url && img.getAttribute('src') !== url) img.src = url;
 }
 
 // ---------------------------------------------------------------- chroma background
@@ -1428,14 +2188,20 @@ function updateSpacing() {
 async function importFiles(fileList) {
   const files = [...fileList];
   const images = files
-    .filter((f) => f.type.startsWith('image/'))
+    .filter((f) => f.type.startsWith('image/') || isRawFile(f))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const audios = files.filter((f) => f.type.startsWith('audio/'));
   const projects = files.filter((f) => /\.(mesora|zip)$/i.test(f.name));
+  const notes = files.filter((f) => /\.json$/i.test(f.name));
+  for (const f of notes) {
+    const r = parseReviewNotes(await f.text());
+    if (r) applyReviewNotes(r);
+    else toast(`«${f.name}» no es un archivo de notas de revisión de MESORA`, 'warn', 6000);
+  }
   for (const f of projects) await importProject(f);
-  if (audios[0]) await loadAudioFile(audios[0]);
+  for (const a of audios) await addAudioTrack(a);
   if (images.length) await importImages(images);
-  if (!images.length && !audios.length && !projects.length) toast('No se reconoció ningún archivo compatible', 'warn');
+  if (!images.length && !audios.length && !projects.length && !notes.length) toast('No se reconoció ningún archivo compatible', 'warn');
 }
 
 async function importImages(images) {
@@ -1491,10 +2257,24 @@ function closeModal(modal) {
   }
 }
 
+let projectListRun = 0;
+
+/** Refreshes the projects window; #projectList has aria-busy="true" until the list is current. */
 async function renderProjectList() {
-  const list = await library.listProjects();
-  const disk = library.kind === 'disk';
-  if (disk) return renderProductionList(list);
+  const run = ++projectListRun;
+  const ul = $('#projectList');
+  ul.setAttribute('aria-busy', 'true');
+  try {
+    const list = await library.listProjects();
+    if (run !== projectListRun) return;
+    if (library.kind === 'disk') renderProductionList(list);
+    else renderBrowserList(list);
+  } finally {
+    if (run === projectListRun) ul.setAttribute('aria-busy', 'false');
+  }
+}
+
+function renderBrowserList(list) {
   const ul = $('#projectList');
   ul.innerHTML = '';
   for (const p of list) {
@@ -1608,7 +2388,7 @@ function renderProductionList(list) {
 async function openMostRecent() {
   const [recent] = await library.listProjects();
   const opened = (recent && await library.getProject(recent.id).catch(() => null))
-    || { project: await library.createProject(newProject('Mi animación')), report: null };
+    || { project: await library.createProject(newProject(t('Mi animación'))), report: null };
   state.project = null;
   await openProject(opened.project, opened.report);
 }
@@ -1810,9 +2590,9 @@ function setExportBusy(busy) {
   for (const b of $$('#modalExport .modal-body > .group button')) b.disabled = busy;
 }
 
-function exportRange() {
+function exportRange(select = '#exRange') {
   const fr = frames();
-  if ($('#exRange').value === 'selection') {
+  if ($(select).value === 'selection') {
     const idx = selectedIndices(true);
     if (idx.length) return [idx[0], idx[idx.length - 1] + 1];
   }
@@ -1832,6 +2612,12 @@ async function exportFilters(a, b) {
 }
 
 async function deliver(blob, filename, message) {
+  // Desktop: into the project's "exports" folder (or where the user picks), like films and image sequences.
+  if (exportApi && P()?.storage === 'disk') {
+    const r = await exportApi.saveFile(P().id, { name: filename, bytes: await blob.arrayBuffer(), ask: $('#dxAsk').checked });
+    if (r) toast(message, 'ok', 8000, [{ label: 'Mostrar', onClick: () => exportApi.reveal(r.target).catch((err) => toast(err.message, 'error')) }]);
+    return;
+  }
   const where = await saveFile(blob, filename);
   toast(where ? `${message} en ${where}` : message, 'ok', 4000);
 }
@@ -1856,7 +2642,7 @@ async function exportVideo() {
       filters: $('#exGrade').checked ? await exportFilters(a, b) : null,
       bitrate: Number($('#exBitrate').value),
       audio: $('#exAudio').checked && audio.ready ? audio : null,
-      audioOffset: p.audio?.offset || 0,
+      audioOffset: 0,
       startExposure: exposureStart(fr, a),
       signal: controller.signal,
       onProgress: (v) => showProgress(`Grabando video… ${Math.round(v * 100)}%`, v),
@@ -1870,6 +2656,171 @@ async function exportVideo() {
     setExportBusy(false);
     hideProgress();
   }
+}
+
+// ---------------------------------------------------------------- desktop export (FFmpeg)
+
+const exportApi = window.mesoraDesktop?.export;
+
+/** Output size for a resolution menu; asks for the height when "Personalizada…" is chosen. */
+async function exportSize(select) {
+  const p = P();
+  let target = Number(select.value);
+  if (select.value === 'custom') {
+    const answer = await askText('Alto de la imagen en píxeles (por ejemplo 1080)', '1080');
+    if (answer == null) return null;
+    target = Math.round(Number(answer));
+    if (!(target >= 64 && target <= 4320)) { toast('Escribe un alto entre 64 y 4320 píxeles', 'warn'); return null; }
+  }
+  return outputSize(p.width, p.height, target);
+}
+
+/** Film (MP4/ProRes/AVI) or image sequence (PNG/TIFF/JPEG), one picture per exposure, encoded by FFmpeg. */
+async function exportWithFFmpeg(kind) {
+  const fr = frames();
+  if (!fr.length) { toast('No hay fotogramas para exportar', 'warn'); return; }
+  const p = P();
+  const video = kind === 'video';
+  const size = await exportSize(video ? $('#dxRes') : $('#dxImgRes'));
+  if (!size) return;
+  const [a, b] = exportRange('#dxRange');
+  const startExposure = exposureStart(fr, a);
+  const filters = (video ? $('#dxGrade') : $('#dxGradeImg')).checked ? await exportFilters(a, b) : null;
+  await saveNow();
+  let audioWav = null;
+  if (video && $('#dxAudio').checked && audio.ready) {
+    const mix = await audio.mixdown(startExposure / p.fps, totalExposures(fr.slice(a, b)) / p.fps);
+    audioWav = encodeWav([mix.getChannelData(0), mix.getChannelData(1)], mix.sampleRate).buffer;
+  }
+  let job;
+  try {
+    job = await exportApi.start(p.id, {
+      format: video ? $('#dxFormat').value : $('#dxImgFormat').value,
+      width: size.w, height: size.h, fps: p.fps, quality: $('#dxQuality').value,
+      name: p.name, ask: $('#dxAsk').checked, audioWav,
+    });
+  } catch (err) {
+    toast(`Error al exportar: ${err.message}`, 'error', 6000);
+    return;
+  }
+  if (!job) return; // the user closed the save dialog
+  const controller = new AbortController();
+  state.exportAbort = controller;
+  stopPlayback(false);
+  setExportBusy(true);
+  showProgress('Preparando…', 0);
+  try {
+    const n = await streamFrames({
+      frames: fr.slice(a, b), store, width: size.w, height: size.h, filters,
+      expand: video || $('#dxExpand').checked, signal: controller.signal,
+      write: (bytes, times) => exportApi.frame(job.id, bytes, times),
+      onProgress: (v) => showProgress(`${video ? 'Creando la película' : 'Creando las imágenes'}… ${Math.round(v * 100)}%`, v),
+    });
+    showProgress('Terminando…', 1);
+    const { target } = await exportApi.finish(job.id);
+    toast(video ? 'Película exportada' : `${n} imágenes exportadas`, 'ok', 9000, [
+      { label: 'Mostrar', onClick: () => exportApi.reveal(target).catch((err) => toast(err.message, 'error')) },
+    ]);
+  } catch (err) {
+    await exportApi.cancel(job.id).catch(() => {});
+    if (err.name === 'AbortError') toast('Exportación cancelada', 'warn');
+    else toast(`Error al exportar: ${err.message}`, 'error', 6000);
+  } finally {
+    state.exportAbort = null;
+    setExportBusy(false);
+    hideProgress();
+  }
+}
+
+/** Mix of every audible track over the exported range, as a WAV file. */
+async function exportWav() {
+  const p = P();
+  if (!audio.ready) { toast('Esta escena no tiene sonido (o todas sus pistas están silenciadas)', 'warn'); return; }
+  const fr = frames();
+  const [a, b] = exportRange(exportApi && p.storage === 'disk' ? '#dxRange' : undefined);
+  const start = fr.length ? exposureStart(fr, a) / p.fps : 0;
+  const length = fr.length ? totalExposures(fr.slice(a, b)) / p.fps : audio.duration;
+  const mix = await audio.mixdown(start, length);
+  const wav = encodeWav([mix.getChannelData(0), mix.getChannelData(1)], mix.sampleRate);
+  await deliver(new Blob([wav], { type: 'audio/wav' }), `${safeFileName(p.name)}.wav`, 'Sonido exportado');
+}
+
+/** One HTML file with the take for someone to review in any browser and send notes back. */
+async function exportReview() {
+  const fr = frames();
+  if (!fr.length) { toast('No hay fotogramas para revisar', 'warn'); return; }
+  const p = P();
+  const [a, b] = exportRange(exportApi && p.storage === 'disk' ? '#dxRange' : undefined);
+  const sel = fr.slice(a, b);
+  setExportBusy(true);
+  try {
+    let audioWav = null;
+    if (audio.ready) {
+      showProgress('Mezclando el sonido…', 0);
+      const mix = await audio.mixdown(exposureStart(fr, a) / p.fps, totalExposures(sel) / p.fps, 22050);
+      const l = mix.getChannelData(0), r = mix.getChannelData(1);
+      const mono = new Float32Array(l.length);
+      for (let i = 0; i < l.length; i++) mono[i] = (l[i] + r[i]) / 2;
+      audioWav = encodeWav([mono], 22050);
+    }
+    const blob = await buildReviewPackage({
+      project: p, frames: sel, audioWav,
+      decode: (id) => store.decode(id, 'preview'),
+      onProgress: (v) => showProgress(`Preparando el paquete de revisión… ${Math.round(v * 100)}%`, v),
+    });
+    await deliver(blob, `${safeFileName(p.name)}_revision.html`, 'Paquete de revisión listo: envíalo y pide que te devuelvan el archivo de notas');
+  } catch (err) {
+    toast(`No se pudo crear el paquete de revisión: ${err.message}`, 'error', 6000);
+  } finally {
+    setExportBusy(false);
+    hideProgress();
+  }
+}
+
+/** Puts the notes written in a review package on their frames (one undoable change). */
+function applyReviewNotes(r) {
+  const p = P();
+  const fr = frames();
+  const found = [];
+  for (const n of r.notes) {
+    let i = fr.findIndex((f) => f.key === n.key);
+    if (i < 0) i = fr.findIndex((f) => f.id === n.id);
+    if (i >= 0) found.push({ n, i });
+  }
+  if (!found.length) {
+    toast(r.takeId && r.takeId !== p.id
+      ? `Estas notas son de otra toma («${r.title}»). Ábrela y vuelve a importarlas.`
+      : 'Ninguna nota coincide con los fotogramas de esta toma', 'warn', 7000);
+    return;
+  }
+  const who = r.reviewer ? `${r.reviewer}: ` : 'Revisión: ';
+  commit((frs) => {
+    for (const { n, i } of found) {
+      const text = `${who}${n.text}`;
+      const cur = frs[i].note;
+      if (cur?.includes(text)) continue;
+      frs[i].note = cur ? `${cur} · ${text}` : text;
+    }
+  });
+  const items = found.map(({ n, i }) => {
+    const li = document.createElement('li');
+    li.className = 'project-item';
+    li.innerHTML = `
+      <div class="thumb"></div>
+      <div class="info"><div class="name"></div><div class="sub"></div></div>
+      <div class="actions"><button class="btn" data-act="go">Ir</button></div>`;
+    li.querySelector('.name').textContent = `Fotograma ${i + 1}`;
+    li.querySelector('.sub').textContent = n.text;
+    store.thumbUrl(fr[i].id).then((url) => { if (url) li.querySelector('.thumb').style.backgroundImage = `url("${url}")`; });
+    li.querySelector('[data-act="go"]').addEventListener('click', () => { closeModal($('#modalList')); setPlayhead(i); });
+    return li;
+  });
+  const missing = r.notes.length - found.length;
+  showList(`Notas de revisión${r.reviewer ? ` de ${r.reviewer}` : ''}`, [
+    `${found.length} ${found.length === 1 ? 'nota añadida a su fotograma' : 'notas añadidas a sus fotogramas'} (se pueden deshacer).`,
+    missing ? `${missing} no tienen fotograma: se borraron o son de otra toma.` : '',
+    r.general ? `Comentario general: ${r.general}` : '',
+  ].filter(Boolean).join(' '), items);
 }
 
 async function exportZip() {
@@ -1993,12 +2944,113 @@ async function keepAwake(on) {
   } catch { /* not allowed right now */ }
 }
 
+// ---------------------------------------------------------------- learning mode
+
+const LS_LEARN = 'mesora.learn';
+const coach = { on: false, step: 0, played: false, exportOpened: false };
+
+const coachContext = () => ({
+  cameraReady: camera.active || !!state.tether, frames: frames().length, played: coach.played, exportOpened: coach.exportOpened,
+});
+
+function startCoach() {
+  Object.assign(coach, { on: true, step: 0, played: false, exportOpened: false });
+  for (const m of $$('.modal')) if (!m.hidden) closeModal(m);
+  coachTick(true);
+}
+
+function stopCoach() {
+  coach.on = false;
+  try { localStorage.removeItem(LS_LEARN); } catch { /* private mode */ }
+  renderCoach();
+}
+
+function coachTick(force = false) {
+  if (!coach.on || !P()) return;
+  const i = currentStep(coach.step, coachContext());
+  if (i === coach.step && !force) return;
+  coach.step = i;
+  try { localStorage.setItem(LS_LEARN, String(i)); } catch { /* private mode */ }
+  renderCoach();
+}
+
+function renderCoach() {
+  for (const el of $$('.coach-target')) el.classList.remove('coach-target');
+  const box = $('#coach');
+  box.hidden = !coach.on;
+  if (!coach.on) return;
+  const step = LEARN_STEPS[coach.step];
+  $('#coachStep').textContent = step ? `Paso ${coach.step + 1} de ${LEARN_STEPS.length}` : '¡Hecho!';
+  $('#coachTitle').textContent = step ? step.title : 'Ya sabes lo básico';
+  $('#coachText').textContent = step
+    ? step.text
+    : 'Para ir más allá: el modo Estudio (arriba) añade el X-Sheet, el lip sync, más papel cebolla y los atajos. Puedes volver a este tutorial desde Ayuda.';
+  $('#btnCoachNext').textContent = step ? 'Siguiente' : 'Terminar';
+  $('#btnCoachNext').hidden = !!step && !step.manual;
+  $('#btnCoachSkip').hidden = !step || step.manual;
+  const target = step?.targets.map((sel) => $(sel)).find((el) => el && el.offsetParent !== null);
+  target?.classList.add('coach-target');
+}
+
+function coachNext() {
+  if (coach.step >= LEARN_STEPS.length) { stopCoach(); return; }
+  coach.step++;
+  coachTick(true);
+}
+
 function showWelcome() {
   for (const m of $$('.modal')) m.hidden = true;
   openModal('#modalWelcome');
 }
 
 // ---------------------------------------------------------------- keyboard
+
+const keymap = new Keymap((() => { try { return JSON.parse(localStorage.getItem(LS_KEYS)) || {}; } catch { return {}; } })());
+
+/** What each shortcut action does. */
+const ACTION_RUN = {
+  capture: () => capture('append'),
+  captureReplace: () => capture('replace'),
+  captureInsert: () => capture('insert'),
+  ...Object.fromEntries([2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`captureHold${n}`, () => capture('append', { hold: n })])),
+  play: () => togglePlay(),
+  shortPlay: () => shortPlay(),
+  loop: () => setSetting('loop', !S().loop),
+  pingpong: () => setSetting('pingpong', !S().pingpong),
+  prev: () => step(-1),
+  next: () => step(1),
+  extendLeft: () => extendSelection(-1),
+  extendRight: () => extendSelection(1),
+  toggleLive: () => toggleLiveLast(),
+  live: () => goLive(),
+  first: () => setPlayhead(0),
+  onion: () => setSetting('onion.enabled', !S().onion.enabled),
+  difference: () => setMode('difference'),
+  blink: () => toggleBlink(),
+  grid: () => setSetting('grid', GRID_CYCLE[(GRID_CYCLE.indexOf(S().grid) + 1) % GRID_CYCLE.length]),
+  peaking: () => setSetting('peaking', !S().peaking),
+  loupe: () => toggleLoupe(),
+  fullscreen: () => toggleFullscreen(),
+  delete: () => deleteSelected(),
+  duplicate: () => duplicateSelected(),
+  selectAll: () => selectAll(),
+  holdMore: () => changeHold(1),
+  holdLess: () => changeHold(-1),
+  note: () => {
+    if (els.frameNote.disabled) toast('Elige un fotograma en la línea de tiempo para anotarlo', 'info', 2000);
+    else { els.frameNote.focus(); els.frameNote.select(); }
+  },
+  undo: () => undo(),
+  redo: () => redo(),
+  save: () => { saveSoon.flush(); toast('Proyecto guardado', 'ok', 1400); },
+  help: () => openModal('#modalHelp'),
+  escape: () => {
+    if (state.drawing) toggleDrawing(false);
+    else if (player.playing) stopPlayback(false);
+    else if (state.blink) toggleBlink();
+  },
+};
+const ACTION_INFO = new Map(ACTIONS.map((a) => [a.id, a]));
 
 function onKeyDown(e) {
   const modal = $$('.modal').reverse().find((m) => !m.hidden);
@@ -2013,58 +3065,150 @@ function onKeyDown(e) {
     if (e.key === 'Escape') closeModal(modal);
     return;
   }
-  const k = e.key;
-  if (e.ctrlKey || e.metaKey) {
-    switch (k.toLowerCase()) {
-      case 'z': if (e.shiftKey) redo(); else undo(); break;
-      case 'y': redo(); break;
-      case 'd': duplicateSelected(); break;
-      case 'a': selectAll(); break;
-      case 's': saveSoon.flush(); toast('Proyecto guardado', 'ok', 1400); break;
-      default: return;
-    }
-    e.preventDefault();
-    return;
-  }
-  if (e.repeat && ['Enter', ' ', '0', '6'].includes(k)) { e.preventDefault(); return; }
-  switch (k) {
-    case 'Enter': capture(e.shiftKey ? 'replace' : e.altKey ? 'insert' : 'append'); break;
-    case ' ': case '0': togglePlay(); break;
-    case '1': step(-1); break;
-    case '3': step(1); break;
-    case 'ArrowLeft': if (e.shiftKey) extendSelection(-1); else step(-1); break;
-    case 'ArrowRight': if (e.shiftKey) extendSelection(1); else step(1); break;
-    case '2': case 'Tab': toggleLiveLast(); break;
-    case '5': case 'End': goLive(); break;
-    case 'Home': setPlayhead(0); break;
-    case '6': shortPlay(); break;
-    case '8': case 'l': case 'L': setSetting('loop', !S().loop); break;
-    case 'p': case 'P': setSetting('pingpong', !S().pingpong); break;
-    case 'o': case 'O': setSetting('onion.enabled', !S().onion.enabled); break;
-    case 'd': case 'D': setMode('difference'); break;
-    case 'b': case 'B': toggleBlink(); break;
-    case 'g': case 'G': setSetting('grid', GRID_CYCLE[(GRID_CYCLE.indexOf(S().grid) + 1) % GRID_CYCLE.length]); break;
-    case 'f': case 'F':
-      if (e.shiftKey) toggleFullscreen();
-      else setSetting('peaking', !S().peaking);
-      break;
-    case 'n': case 'N':
-      if (els.frameNote.disabled) toast('Elige un fotograma en la línea de tiempo para anotarlo', 'info', 2000);
-      else { els.frameNote.focus(); els.frameNote.select(); }
-      break;
-    case 'z': case 'Z': toggleLoupe(); break;
-    case 'Delete': case 'Backspace': deleteSelected(); break;
-    case '+': case '=': changeHold(1); break;
-    case '-': case '_': changeHold(-1); break;
-    case '?': openModal('#modalHelp'); break;
-    case 'Escape':
-      if (state.drawing) toggleDrawing(false);
-      else if (player.playing) stopPlayback(false);
-      else if (state.blink) toggleBlink();
-      break;
-    default: return;
-  }
+  const combo = comboOf(e);
+  const action = combo && keymap.actionFor(combo);
+  if (!action) return;
+  const info = ACTION_INFO.get(action);
+  if (info.studio && !document.body.classList.contains('mode-studio')) return;
   e.preventDefault();
+  if (e.repeat && info.noRepeat) return;
+  ACTION_RUN[action]();
+}
+
+/** Help › shortcuts: lists every action with its keys and lets the user change them. */
+function renderShortcuts() {
+  const root = $('#shortcutList');
+  root.innerHTML = '';
+  const groups = new Map();
+  for (const a of ACTIONS) {
+    if (a.studio && !document.body.classList.contains('mode-studio')) continue;
+    if (a.fixed && a.id !== 'captureHold2') continue;
+    if (!groups.has(a.group)) groups.set(a.group, []);
+    groups.get(a.group).push(a);
+  }
+  for (const [group, actions] of groups) {
+    const box = document.createElement('div');
+    box.innerHTML = `<h3></h3>`;
+    box.querySelector('h3').textContent = group;
+    for (const a of actions) {
+      const row = document.createElement('div');
+      row.className = 'key-row';
+      const keys = keymap.keys.get(a.id);
+      row.innerHTML = `<span class="what"></span><span class="keys">${keys.map((k) => `<kbd></kbd>`).join(' ')}</span><button class="btn ghost">Cambiar</button>`;
+      row.querySelector('.what').textContent = a.label;
+      row.querySelectorAll('kbd').forEach((el, i) => { el.textContent = comboLabel(keys[i]); });
+      if (!keys.length) row.querySelector('.keys').innerHTML = '<span class="muted small">sin atajo</span>';
+      if (a.fixed) {
+        row.querySelector('.what').textContent = 'Capturar y mantener 2 a 9 cuadros';
+        row.querySelector('.keys').innerHTML = '<kbd>Ctrl + 2 … 9</kbd>';
+        row.querySelector('button').remove();
+      } else {
+        row.querySelector('button').addEventListener('click', () => listenForKey(a, row));
+      }
+      box.append(row);
+    }
+    root.append(box);
+  }
+}
+
+function listenForKey(action, row) {
+  row.classList.add('listening');
+  row.querySelector('.keys').innerHTML = '<kbd>Pulsa una tecla…</kbd>';
+  const onKey = (e) => {
+    const combo = comboOf(e);
+    if (!combo) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    window.removeEventListener('keydown', onKey, true);
+    if (combo !== 'Escape') {
+      const lost = keymap.assign(action.id, combo);
+      localStorage.setItem(LS_KEYS, JSON.stringify(keymap.changes()));
+      if (lost) toast(`«${ACTION_INFO.get(lost).label}» se ha quedado sin atajo`, 'warn', 4000);
+    }
+    renderShortcuts();
+  };
+  window.addEventListener('keydown', onKey, true);
+}
+
+// ---------------------------------------------------------------- workspaces and interface mode
+
+function setWorkspace(tab) {
+  if (!$(`.tab[data-tab="${tab}"]`) || ($(`.tab[data-tab="${tab}"]`).classList.contains('studio-only') && !document.body.classList.contains('mode-studio'))) tab = 'camera';
+  for (const t of $$('.tab')) t.classList.toggle('active', t.dataset.tab === tab);
+  for (const p of $$('.tabpanel')) p.classList.toggle('active', p.dataset.panel === tab);
+  for (const c of [...document.body.classList]) if (c.startsWith('ws-')) document.body.classList.remove(c);
+  document.body.classList.add(`ws-${tab}`);
+  localStorage.setItem(LS_WORKSPACE, tab);
+  if (tab === 'xsheet') renderXSheet(true);
+}
+
+/** Sencillo: the essentials. Estudio: X-Sheet, multi-frame capture keys, review speed and more. */
+function setUiMode(mode) {
+  const studio = mode === 'studio';
+  document.body.classList.toggle('mode-studio', studio);
+  for (const b of $$('[data-uimode]')) b.classList.toggle('active', b.dataset.uimode === mode);
+  localStorage.setItem(LS_UI_MODE, mode);
+  if (!studio && $('.tab.active')?.classList.contains('studio-only')) setWorkspace('view');
+  renderShortcuts();
+}
+
+// ---------------------------------------------------------------- X-Sheet
+
+const xsheetView = new XSheetView({
+  root: $('#xsheet'),
+  onSelect: (i) => (i >= 0 ? onTimelineSelect(i, {}) : goLive()),
+  onPlan: (exposure, key, value) => {
+    const plan = S().xsheet.plan;
+    const row = { ...(plan[exposure] || {}) };
+    if (value.trim()) row[key] = value; else delete row[key];
+    if (Object.keys(row).length) plan[exposure] = row; else delete plan[exposure];
+    saveSoon();
+    if (key === 'phoneme') updateHud();
+  },
+  onNote: (i, text) => {
+    const f = frames()[i];
+    if (!f) return;
+    const note = text.trim();
+    if ((f.note || '') === note) return;
+    commit((fr) => { if (note) fr[i].note = note; else delete fr[i].note; });
+  },
+});
+
+function renderXSheet(force = false) {
+  if (!document.body.classList.contains('ws-xsheet') && !force) return;
+  const x = S().xsheet;
+  xsheetView.update({ frames: frames(), plan: x.plan, length: Number(x.length) || 48, fps: P().fps, current: isLive() ? -1 : state.playhead });
+  xsheetView.reveal(isLive() ? -1 : state.playhead);
+}
+
+async function exportXSheetCSV() {
+  const x = S().xsheet;
+  const csv = xsheetToCSV(frames(), x.plan, Number(x.length) || 48, P().fps);
+  const name = `${safeFileName(P().name)}${P().scene ? `_${P().scene.id}_${P().take.id}` : ''}_xsheet.csv`;
+  await deliver(new Blob(['﻿', csv], { type: 'text/csv' }), name, 'X-Sheet exportado');
+}
+
+async function importXSheetCSV(file) {
+  const plan = xsheetFromCSV(await file.text());
+  const n = Object.keys(plan).length;
+  if (!n) { toast('El CSV no tiene columnas de Acción, Diálogo, Fonema, Cámara o Luz', 'warn', 5000); return; }
+  if (Object.keys(S().xsheet.plan).length && !confirm(`¿Sustituir lo planificado en el X-Sheet por las ${n} filas del CSV?`)) return;
+  S().xsheet.plan = plan;
+  saveSoon();
+  renderXSheet(true);
+  toast(`${n} filas importadas al X-Sheet`, 'ok');
+}
+
+function printXSheet() {
+  const p = P();
+  const x = S().xsheet;
+  $('#xsheetPrint').innerHTML = xsheetTableHTML(frames(), x.plan, Number(x.length) || 48, p.fps, {
+    title: `${p.name}${p.scene ? ` · ${p.scene.name} · ${p.take.name}` : ''}`,
+    subtitle: `${p.fps} fps${x.animator ? ` · Animación: ${x.animator}` : ''} · ${formatDate(Date.now())}`,
+  });
+  document.body.classList.add('printing-xsheet');
+  window.print();
+  document.body.classList.remove('printing-xsheet');
 }
 
 // ---------------------------------------------------------------- UI wiring
@@ -2072,6 +3216,7 @@ function onKeyDown(e) {
 function bindUI() {
   document.body.classList.toggle('is-android', isAndroidApp);
   document.body.classList.toggle('is-desktop-app', isDesktopApp);
+  $('#onionColorsRow').hidden = viewer.kind !== 'gpu';
   if (library.kind === 'disk') {
     $('#diskTools').hidden = false;
     els.saveState.title = 'Tu trabajo se guarda automáticamente en la carpeta de la producción (Documentos/MESORA)';
@@ -2103,7 +3248,10 @@ function bindUI() {
   document.addEventListener('keydown', unlock, { once: true });
 
   $('#btnStartCam').addEventListener('click', startCamera);
-  els.camToggle.addEventListener('click', () => (camera.active ? stopCamera() : startCamera()));
+  els.camToggle.addEventListener('click', () => {
+    state.reconnecting = false;
+    if (camera.active) stopCamera(); else startCamera();
+  });
   els.camDevice.addEventListener('change', () => { if (camera.active || els.camDevice.value) startCamera(); });
   els.camRes.addEventListener('change', () => { saveCamPrefs({ resolution: els.camRes.value }); if (camera.active) startCamera(); });
   $('#btnCamLock').addEventListener('click', async () => {
@@ -2123,6 +3271,34 @@ function bindUI() {
   });
 
   els.capture.addEventListener('click', () => capture());
+  $('#btnTestShot').addEventListener('click', () => takeTestShot().catch((err) => toast(err.message, 'error')));
+  $('#btnReviewTake').addEventListener('click', () => reviewTake().catch((err) => toast(`No se pudo revisar la toma: ${err.message}`, 'error')));
+  setInterval(liveAssistTick, 900);
+  $('#btnCompareTest').addEventListener('click', toggleCompareTest);
+  if (cameraApi) {
+    $('#btnTether').addEventListener('click', () => chooseTetherFolder().catch((err) => toast(err.message, 'error', 6000)));
+    $('#btnTetherStop').addEventListener('click', () => stopTether());
+    cameraApi.onPhoto(onCameraPhoto);
+    cameraApi.onError((msg) => toast(msg, 'error', 7000));
+  }
+  if (backupApi) {
+    backupApi.onStatus(updateBackupUI);
+    backupApi.status().then(updateBackupUI);
+    $('#btnBackupChoose').addEventListener('click', () => backupAction(backupApi.choose));
+    $('#btnBackupNow').addEventListener('click', () => backupAction(backupApi.run));
+    $('#btnBackupOff').addEventListener('click', () => backupAction(backupApi.disable));
+  }
+  wireRig();
+  if (remoteApi) {
+    $('#btnRemote').addEventListener('click', toggleRemote);
+    remoteApi.onAction((action) => ACTION_RUN[action]?.());
+    remoteApi.onActive((active) => {
+      remote.active = active;
+      updateRemoteUI();
+      if (active) pushRemoteState(true);
+    });
+    setInterval(() => { pushRemoteState(); pushRemotePreview(); }, 600);
+  }
   els.play.addEventListener('click', togglePlay);
   $('#tFirst').addEventListener('click', () => setPlayhead(0));
   $('#tPrev').addEventListener('click', () => step(-1));
@@ -2154,31 +3330,52 @@ function bindUI() {
     drawGuides();
   });
 
-  els.fps.addEventListener('change', () => {
+  els.fps.addEventListener('change', async () => {
+    if (els.fps.value === 'custom') {
+      const answer = await askText('Fotogramas por segundo (1 a 60)', String(P().fps));
+      const fps = Math.round(Number(String(answer ?? '').replace(',', '.')));
+      if (!(fps >= 1 && fps <= 60)) { setFpsUI(P().fps); if (answer != null) toast('Escribe un número entre 1 y 60', 'warn'); return; }
+      setFpsUI(fps);
+    }
     P().fps = Number(els.fps.value);
     saveSoon();
     renderTimeline();
     updateReferenceUI();
     updateHud();
     updateProjectInfo();
-    updateAudioUI();
+    audio.setTracks(P().tracks, P().fps);
+    renderTracks();
+    drawWave();
   });
   els.projectName.addEventListener('change', () => {
-    P().name = els.projectName.value.trim() || 'Sin título';
+    P().name = els.projectName.value.trim() || t('Sin título');
     els.projectName.value = P().name;
     saveSoon();
   });
   els.projectName.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.projectName.blur(); });
 
   $('#btnAudio').addEventListener('click', () => $('#fileAudio').click());
-  $('#fileAudio').addEventListener('change', (e) => { if (e.target.files[0]) loadAudioFile(e.target.files[0]); e.target.value = ''; });
-  $('#btnAudioClear').addEventListener('click', clearAudio);
-  els.audioOffset.addEventListener('change', () => {
-    if (!P().audio) { els.audioOffset.value = 0; return; }
-    P().audio.offset = Math.max(0, Math.floor(Number(els.audioOffset.value) || 0));
-    saveSoon();
-    drawWave();
+  $('#fileAudio').addEventListener('change', async (e) => {
+    for (const f of [...e.target.files]) await addAudioTrack(f);
+    e.target.value = '';
   });
+  $('#trackList').addEventListener('input', onTrackInput);
+  $('#trackList').addEventListener('change', onTrackInput);
+  $('#trackList').addEventListener('click', onTrackClick);
+  $('#lipCharacter').addEventListener('change', (e) => { lip().active = e.target.value; saveSoon(); renderLipSync(); updateHud(); });
+  $('#btnLipAddChar').addEventListener('click', addCharacter);
+  $('#btnLipRename').addEventListener('click', renameCharacter);
+  $('#mouthGrid').addEventListener('click', (e) => {
+    const b = e.target.closest('.mouth');
+    if (!b) return;
+    mouthTarget = b.dataset.mouth;
+    $('#fileMouth').click();
+  });
+  $('#fileMouth').addEventListener('change', (e) => {
+    if (e.target.files[0]) setMouthImage(e.target.files[0]).catch((err) => toast(err.message, 'error'));
+    e.target.value = '';
+  });
+  $('#btnLipDraft').addEventListener('click', () => draftLipSync().catch((err) => toast(`No se pudo generar el borrador: ${err.message}`, 'error')));
 
   els.timelapse.addEventListener('click', toggleTimelapse);
   for (const id of ['#spDist', '#spFrames', '#spEase']) $(id).addEventListener('input', updateSpacing);
@@ -2189,17 +3386,22 @@ function bindUI() {
   $('#btnProjects').addEventListener('click', () => { renderProjectList(); openModal('#modalProjects'); });
   $('#formNewProject').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const p = await library.createProject(newProject($('#newProjectName').value.trim() || 'Sin título', Number($('#newProjectFps').value)));
+    const p = await library.createProject(newProject($('#newProjectName').value.trim() || t('Sin título'), Number($('#newProjectFps').value)));
     $('#newProjectName').value = '';
     closeModal($('#modalProjects'));
     await openProject(p);
     toast(`Proyecto «${p.name}» creado`, 'ok');
   });
-  $('#btnImportProject').addEventListener('click', () => $('#fileImport').click());
 
-  $('#btnExport').addEventListener('click', () => { populateExportFormats(); openModal('#modalExport'); });
+  $('#btnExport').addEventListener('click', () => { coach.exportOpened = true; populateExportFormats(); openModal('#modalExport'); });
   $('#btnExportVideo').addEventListener('click', exportVideo);
   $('#btnExportZip').addEventListener('click', exportZip);
+  $('#btnDxVideo').addEventListener('click', () => exportWithFFmpeg('video'));
+  $('#btnDxImages').addEventListener('click', () => exportWithFFmpeg('images'));
+  $('#btnDxConform').addEventListener('click', () => conformTake().catch((err) => toast(err.message, 'error', 6000)));
+  $('#btnExportReview').addEventListener('click', () => exportReview());
+  $('#btnExportWav').addEventListener('click', () => exportWav().catch((err) => toast(`Error al exportar: ${err.message}`, 'error', 6000)));
+  $('#dxFormat').addEventListener('change', () => { $('#dxQualityRow').hidden = $('#dxFormat').value !== 'mp4'; });
   $('#btnExportFrame').addEventListener('click', exportCurrentFrame);
   $('#btnExportProject').addEventListener('click', () => exportProject());
   $('#btnExportCancel').addEventListener('click', () => state.exportAbort?.abort());
@@ -2207,6 +3409,21 @@ function bindUI() {
   $('#btnHelp').addEventListener('click', () => openModal('#modalHelp'));
   $('#btnShowWelcome').addEventListener('click', showWelcome);
   $('#btnWelcomeHelp').addEventListener('click', () => { closeModal($('#modalWelcome')); openModal('#modalHelp'); });
+  for (const sel of $$('.lang-select')) {
+    sel.innerHTML = Object.entries(LANGS).map(([code, name]) => `<option value="${code}">${name}</option>`).join('');
+    sel.value = currentLang();
+    sel.addEventListener('change', async () => {
+      saveLang(sel.value);
+      await saveNow().catch(() => {});
+      location.reload();
+    });
+  }
+  $('#btnWelcomeLearn').addEventListener('click', startCoach);
+  $('#btnLearn').addEventListener('click', startCoach);
+  $('#btnCoachNext').addEventListener('click', coachNext);
+  $('#btnCoachSkip').addEventListener('click', coachNext);
+  $('#btnCoachClose').addEventListener('click', stopCoach);
+  setInterval(() => coachTick(), 500);
   $('#btnWelcomeStart').addEventListener('click', () => {
     closeModal($('#modalWelcome'));
     if (!camera.active) startCamera();
@@ -2240,12 +3457,23 @@ function bindUI() {
     });
   }
 
-  for (const tab of $$('.tab')) {
-    tab.addEventListener('click', () => {
-      for (const t of $$('.tab')) t.classList.toggle('active', t === tab);
-      for (const p of $$('.tabpanel')) p.classList.toggle('active', p.dataset.panel === tab.dataset.tab);
-    });
-  }
+  for (const tab of $$('.tab')) tab.addEventListener('click', () => setWorkspace(tab.dataset.tab));
+  for (const b of $$('[data-uimode]')) b.addEventListener('click', () => setUiMode(b.dataset.uimode));
+  setUiMode(localStorage.getItem(LS_UI_MODE) === 'studio' ? 'studio' : 'simple');
+  setWorkspace(localStorage.getItem(LS_WORKSPACE) || 'camera');
+  $('#btnResetKeys').addEventListener('click', () => {
+    keymap.reset();
+    localStorage.removeItem(LS_KEYS);
+    renderShortcuts();
+    toast('Atajos restablecidos', 'ok');
+  });
+  $('#btnMonitor').addEventListener('click', () => {
+    if (!openMonitor($('#mainCanvas'))) toast('Permite las ventanas emergentes para usar la segunda pantalla', 'warn', 5000);
+  });
+  $('#btnXsCsv').addEventListener('click', () => exportXSheetCSV().catch((err) => toast(err.message, 'error')));
+  $('#btnXsImport').addEventListener('click', () => $('#fileXsCsv').click());
+  $('#fileXsCsv').addEventListener('change', (e) => { if (e.target.files[0]) importXSheetCSV(e.target.files[0]); e.target.value = ''; });
+  $('#btnXsPrint').addEventListener('click', printXSheet);
   $('#btnPanel').addEventListener('click', () => $('#sidepanel').classList.toggle('open'));
 
   // Drag & drop files from the OS.
@@ -2270,10 +3498,43 @@ function bindUI() {
   window.addEventListener('pagehide', flush);
 }
 
+// ---------------------------------------------------------------- desktop: version, log, updates
+
+/** Once a day, tells the user when a newer download exists. Never installs anything by itself. */
+async function checkForUpdates() {
+  const last = Number(localStorage.getItem(LS_UPDATE_CHECK) || 0);
+  if (Date.now() - last < 24 * 3600 * 1000) return;
+  localStorage.setItem(LS_UPDATE_CHECK, String(Date.now()));
+  const r = await window.mesoraDesktop.app.checkUpdate().catch(() => null);
+  if (r?.available) {
+    toast('Hay una versión nueva de MESORA Studio. Tus proyectos se conservan al actualizar.', 'info', 15000, [
+      { label: 'Descargar', onClick: () => window.open(r.url) },
+    ]);
+  }
+}
+
+/** Desktop builds with FFmpeg get the professional export section instead of the browser one. */
+async function detectFFmpeg() {
+  const ok = !!(await exportApi?.available().catch(() => false));
+  document.body.classList.toggle('has-ffmpeg', ok);
+}
+
+async function showAppInfo() {
+  const api = window.mesoraDesktop?.app;
+  if (!api) return;
+  const info = await api.info().catch(() => null);
+  if (!info) return;
+  $('#appInfo').hidden = false;
+  $('#appVersion').textContent = `MESORA Studio ${info.version}${info.commit ? ` · compilación ${info.commit.slice(0, 7)}` : ''}`;
+  $('#btnOpenLog').onclick = () => api.openLog().catch((err) => toast(err.message, 'error'));
+}
+
 // ---------------------------------------------------------------- init
 
 async function init() {
   bindUI();
+  showAppInfo();
+  detectFFmpeg();
   updateSpacing();
   const prefs = camPrefs();
   if (prefs.resolution) els.camRes.value = prefs.resolution;
@@ -2291,16 +3552,23 @@ async function init() {
     const [recent] = await library.listProjects();
     if (recent) opened = await library.getProject(recent.id).catch(() => null);
   }
-  if (!opened) opened = { project: await library.createProject(newProject('Mi primera animación')), report: null };
+  if (!opened) opened = { project: await library.createProject(newProject(t('Mi primera animación'))), report: null };
   await openProject(opened.project, opened.report);
   buildCamControls();
   updateCamUI();
   await refreshDevices();
   requestAnimationFrame(loop);
 
+  if (window.mesoraDesktop?.app) setTimeout(checkForUpdates, 15000);
+
   if (!localStorage.getItem(LS_WELCOMED)) {
     localStorage.setItem(LS_WELCOMED, '1');
     showWelcome();
+  } else {
+    // The learning mode continues where it was left.
+    const learning = Number(localStorage.getItem(LS_LEARN));
+    if (localStorage.getItem(LS_LEARN) != null && learning >= 0) Object.assign(coach, { on: true, step: learning });
+    coachTick(true);
   }
 
   try {
