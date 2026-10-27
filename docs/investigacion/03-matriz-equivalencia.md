@@ -47,7 +47,7 @@ Una función puede tener dos estados, por ejemplo «Parcial + Requiere SDK».
 
 | # | Función | Cómo funciona en Dragonframe | MESORA hoy | Estado | Cómo se implementará | Tecnología / dependencias | Prueba de aceptación |
 |---|---|---|---|---|---|---|---|
-| 2.1 | Capa de adaptadores de cámara | Múltiples fuentes de captura [S1 p. 39–50] | Una única clase `Camera` (getUserMedia) | No iniciada | Interfaz `CameraAdapter` + registro de adaptadores (ver arquitectura) | — | Las pruebas del contrato pasan para cada adaptador |
+| 2.1 | Capa de adaptadores de cámara | Múltiples fuentes de captura [S1 p. 39–50] | Una única clase `Camera` (getUserMedia, o el móvil por WebRTC) | No iniciada | Interfaz `CameraAdapter` + registro de adaptadores (ver arquitectura) | — | Las pruebas del contrato pasan para cada adaptador |
 | 2.2 | Webcam / UVC / capturadora HDMI | Soportado | Sí, hasta 4K | Parcial | Adaptador `uvc` (código actual migrado) | Chromium `getUserMedia` | Live view ≥ 25 fps a 1080p; captura PNG sin pérdida |
 | 2.3 | Canon EOS (réflex y sin espejo) | Recomendado; live view y captura [S8] | No | Requiere SDK | Adaptador `canon-edsdk` en un proceso nativo separado | EDSDK (registro en Canon), C++ | Live view, captura RAW+JPEG a disco, cambio de ISO/apertura/obturación, desconexión y reconexión |
 | 2.4 | Sony α | Soportado (modelos limitados) [S8] | No | Requiere SDK | Adaptador `sony-crsdk` | Camera Remote SDK | Igual que 2.3 |
@@ -69,6 +69,7 @@ Una función puede tener dos estados, por ejemplo «Parcial + Requiere SDK».
 | 2.20 | Intervalómetro / time-lapse | Sí [S1 p. 145] | Sí | Parcial | Se conserva, integrado con la cola | — | 100 disparos a 2 s con desviación < 50 ms |
 | 2.21 | Multicámara | Hasta 8 (DF5.2) [S3] | No | No iniciada | Varias instancias de adaptador | — | 2 webcams capturando a la vez en exposiciones distintas |
 | 2.22 | Captura *making-of* | DF5.0 [S3] | No | No iniciada | Segunda fuente grabando en segundo plano | — | — |
+| 2.23 | Móvil como cámara inalámbrica | **[DESC]**: no aparece en las fuentes revisadas | Sí (escritorio): QR, página https del móvil con certificado propio, imagen en vivo por WebRTC en la red local ajustada para no acumular retraso, fotos a resolución completa codificadas en el móvil (JPEG o PNG) por canal de datos, controles de cámara que el navegador del móvil exponga, pantalla del móvil en negro, reconexión sola | Implementada + Requiere hardware | `js/phonecam.js`, `electron/remote/camera.html`, `electron/core/cert.cjs` | WebRTC, `https` de Node | Pasa con otro navegador haciendo de móvil en el mismo ordenador: 1080p desde el primer segundo, foto 1920 × 1080 en JPEG y PNG sin recomprimir, retardo móvil → pantalla de 39–40 ms de mediana (p95 ≤ 63 ms) (E2E `tests/e2e/desktop.e2e.cjs` sección 21, `tests/cert.test.js`, `tests/remote.test.js`). Falta la prueba con un móvil real por wifi |
 
 ## 3. Herramientas de animación y visor
 
@@ -202,16 +203,16 @@ Una función puede tener dos estados, por ejemplo «Parcial + Requiere SDK».
 
 ## Resumen numérico
 
-Recuento automático de las filas de esta matriz (actualizado el 27-10-2026, tras las fases 1–10):
+Recuento automático de las filas de esta matriz (actualizado el 27-10-2026, tras las fases 1–10 y el móvil como cámara):
 
 | Estado | Funciones |
 |---|---|
 | Probada y verificada | 43 |
-| Implementada | 22 |
+| Implementada | 23 |
 | Parcialmente implementada | 32 |
 | No iniciada | 17 |
 | Requiere SDK externo | 4 |
 | Requiere hardware | 1 |
-| **Total** | **119** |
+| **Total** | **120** |
 
-Además, 5 filas necesitan un aparato para su prueba final («Requiere hardware»). Las 4 filas de cámaras de marca necesitan el SDK del fabricante, que el usuario debe solicitar; mientras tanto, cualquier cámara funciona con la carpeta vigilada (2.8).
+Además, 6 filas necesitan un aparato para su prueba final («Requiere hardware»). Las 4 filas de cámaras de marca necesitan el SDK del fabricante, que el usuario debe solicitar; mientras tanto, cualquier cámara funciona con la carpeta vigilada (2.8).

@@ -5,6 +5,7 @@ import {
 import { library } from './library.js';
 import { pendingBrowserProjects, migrateProject } from './migrate.js';
 import { Camera } from './camera.js';
+import { PhoneLink } from './phonecam.js';
 import { FrameStore, isRawFile } from './framestore.js';
 import { History } from './history.js';
 import { AudioMix, TRACK_COLORS, encodeWav, exposureLevels } from './audio.js';
@@ -766,7 +767,7 @@ async function capture(mode = 'append', { skipDelay = false, hold = 1 } = {}) {
       toast(`No se hizo la foto: la luz o el movimiento no están listos (${err.message})`, 'error', 7000);
       return;
     }
-    canvas = await camera.grab({ average: s.average, flipH: s.flipH, flipV: s.flipV });
+    canvas = await camera.grab({ average: s.average, flipH: s.flipH, flipV: s.flipV, format: s.format, quality: s.quality });
   } catch (err) {
     toast(`Error al capturar: ${err.message}`, 'error', 4500);
     return;
@@ -1227,6 +1228,160 @@ async function pushRemotePreview() {
   }
 }
 
+// ---------------------------------------------------------------- phone as a wireless camera (desktop)
+
+const phoneApi = window.mesoraDesktop?.phonecam;
+const phone = { on: false, device: '', size: '', seen: false, statsBusy: false };
+
+/** Waits for the phone: shows the QR; when the phone connects, it becomes the camera. */
+async function usePhone({ show = true } = {}) {
+  if (!phoneApi) return;
+  if (!phone.on) {
+    try {
+      const info = await phoneApi.start();
+      phone.on = true;
+      $('#phoneQr').src = `data:image/svg+xml;base64,${btoa(info.qr)}`;
+      $('#phoneUrl').textContent = info.url;
+      $('#phoneOtherUrls').textContent = info.urls.slice(1).join('\n');
+      $('#phoneOther').hidden = info.urls.length < 2;
+      saveCamPrefs({ deviceId: 'phone' });
+    } catch (err) {
+      toast(`No se pudo preparar el móvil como cámara: ${err.message}`, 'error', 6000);
+      return;
+    }
+  }
+  if (!camera.remote) {
+    camera.stop();
+    els.stageEmptyMsg.textContent = 'Esperando al móvil: escanea el código de Cámara › Fuente';
+    if (show) {
+      setWorkspace('camera');
+      $('details[data-sec="fuente"]').open = true;
+    }
+  }
+  updateCamUI();
+  updatePhoneUI();
+}
+
+async function stopPhone() {
+  phone.on = false;
+  phone.seen = false;
+  if (camera.remote) camera.stop();
+  await phoneApi?.stop();
+  updatePhoneUI();
+}
+
+/** A phone has opened the camera page and asks to connect. */
+async function phoneOffer({ id, sdp }) {
+  if (!phone.on) {
+    phoneApi.answer(id, { error: 'En MESORA no está elegido el móvil como cámara (Cámara › Fuente).' });
+    return;
+  }
+  if (camera.remote?.connected) {
+    phoneApi.answer(id, { error: 'Ya hay otro móvil conectado como cámara.' });
+    return;
+  }
+  const link = new PhoneLink();
+  try {
+    phoneApi.answer(id, { sdp: await link.accept(sdp) });
+    await link.ready;
+  } catch (err) {
+    link.close();
+    phoneApi.answer(id, { error: err.message });
+    if (phone.on && !camera.remote) $('#phoneState').textContent = err.message;
+    return;
+  }
+  if (!phone.on) { link.close(); return; }
+  link.onChange = () => phoneChanged();
+  await camera.attach(link);
+  if (camera.remote !== link) return; // another camera was chosen meanwhile
+  await phoneResolution().catch(() => {});
+  if ($('#phoneDark').checked) link.request({ type: 'screen', dark: true }).catch(() => {});
+  if (camera.remote !== link) return;
+  phone.device = link.info.deviceId || '';
+  phone.size = `${camera.width}x${camera.height}`;
+  await cameraOpened();
+  updatePhoneUI();
+  toast(phone.seen ? 'Móvil reconectado' : 'El móvil es ahora la cámara', 'ok');
+  phone.seen = true;
+}
+
+/** The phone opens its camera at the size chosen in Resolución. */
+async function phoneResolution() {
+  const link = camera.remote;
+  if (!link) return;
+  const [w, h] = els.camRes.value.split('x').map(Number);
+  const s = link.info.settings || {};
+  const asked = link.info.want || { width: Math.max(s.width || 0, s.height || 0) };
+  if (asked.width === w && asked.height === h) return;
+  await link.useCamera({ width: w, height: h });
+}
+
+/** The phone says something changed: another camera, size or setting. */
+function phoneChanged() {
+  const link = camera.remote;
+  if (!link) return;
+  if (link.info.deviceId !== phone.device) {
+    phone.device = link.info.deviceId || '';
+    restoreControls().then(buildCamControls);
+  }
+  const size = `${camera.width}x${camera.height}`;
+  if (size !== phone.size) {
+    phone.size = size;
+    checkCameraSize();
+  }
+  updateCamUI();
+  updatePhoneUI();
+}
+
+/** The connection dropped (wifi, phone locked…): the phone tries again by itself. */
+function phoneLost() {
+  camera.stop();
+  stopTimelapse();
+  els.stageEmptyMsg.textContent = 'Se perdió la conexión con el móvil. Esperando a que vuelva…';
+  toast('Se perdió la conexión con el móvil. Volverá solo en cuanto el móvil reconecte.', 'warn', 6000);
+  buildCamControls();
+  updateCamUI();
+  updatePhoneUI();
+  state.dirty = true;
+}
+
+function updatePhoneUI() {
+  const box = $('#phoneBox');
+  if (!box) return;
+  const link = camera.remote;
+  box.hidden = !phone.on && els.camDevice.value !== 'phone';
+  $('#phoneWait').hidden = !!link || !phone.on;
+  $('#phoneState').textContent = link ? `Conectado: ${link.info.label || 'cámara del móvil'}`
+    : phone.on ? 'Esperando al móvil…' : 'Pulsa Conectar para usar el móvil.';
+  const cams = link?.info.cameras || [];
+  const sel = $('#phoneCam');
+  $('#phoneCamField').hidden = cams.length < 2;
+  if (cams.length >= 2 && sel.dataset.list !== JSON.stringify(cams)) {
+    sel.dataset.list = JSON.stringify(cams);
+    sel.innerHTML = '';
+    for (const c of cams) sel.append(new Option(c.label, c.id));
+  }
+  if (link) sel.value = link.info.deviceId || '';
+  $('#phoneDarkField').hidden = !link;
+  if (!link) $('#phoneStats').textContent = '';
+}
+
+/** Live view quality and delay, measured on this computer. */
+async function showPhoneStats() {
+  const link = camera.remote;
+  if (!link || phone.statsBusy || $('#phoneBox').hidden || document.hidden) return;
+  phone.statsBusy = true;
+  try {
+    const st = await link.stats();
+    if (!st || camera.remote !== link) return;
+    const ms = (v) => (v == null ? '–' : `${Math.round(v)} ms`);
+    $('#phoneStats').textContent = `En vivo ${st.width} × ${st.height} · ${st.fps} fps · ${st.codec}`
+      + ` · retardo medido aquí: red ${ms(st.networkMs)}, espera ${ms(st.bufferMs)}, decodificar ${ms(st.decodeMs)}`;
+  } catch { /* closed meanwhile */ } finally {
+    phone.statsBusy = false;
+  }
+}
+
 // ---------------------------------------------------------------- test shot (A/B)
 
 /** A photo to check exposure, focus or framing; it is not added to the animation. */
@@ -1261,17 +1416,19 @@ function saveCamPrefs(patch) {
 
 async function refreshDevices() {
   const devices = await Camera.listDevices().catch(() => []);
-  const current = camera.track?.getSettings?.().deviceId || camPrefs().deviceId || '';
+  const current = phone.on ? 'phone' : camera.track?.getSettings?.().deviceId || camPrefs().deviceId || '';
   els.camDevice.innerHTML = '';
-  if (!devices.length) {
-    els.camDevice.append(new Option('Ninguna cámara detectada', ''));
-    return;
-  }
+  // Never the phone by default: it opens a server on the network, so only when chosen.
+  if (!devices.length) els.camDevice.append(new Option('Ninguna cámara detectada', ''));
   devices.forEach((d, i) => els.camDevice.append(new Option(d.label || `Cámara ${i + 1}`, d.deviceId)));
-  if (devices.some((d) => d.deviceId === current)) els.camDevice.value = current;
+  if (phoneApi) els.camDevice.append(new Option('Móvil por wifi', 'phone'));
+  if ([...els.camDevice.options].some((o) => o.value === current)) els.camDevice.value = current;
+  updatePhoneUI();
 }
 
 async function startCamera({ quiet = false } = {}) {
+  if (els.camDevice.value === 'phone') { await usePhone(); return; }
+  if (phone.on) await stopPhone();
   if (!Camera.supported) {
     toast('Este navegador no permite usar la cámara (se necesita HTTPS o localhost)', 'error', 5000);
     return;
@@ -1291,25 +1448,42 @@ async function startCamera({ quiet = false } = {}) {
     updateCamUI();
     return;
   }
+  const track = camera.track;
+  if (!track || camera.remote) return; // another camera was chosen meanwhile
   await refreshDevices();
-  const deviceId = camera.track.getSettings?.().deviceId || '';
-  saveCamPrefs({ deviceId, resolution: els.camRes.value });
-  const saved = prefs.controls?.[deviceId];
-  if (saved && Object.keys(saved).length) {
-    await camera.track.applyConstraints({ advanced: [saved] }).catch(() => {});
-  }
-  const p = P();
-  if (!p.frames.length) setProjectSize(camera.width, camera.height);
-  else if (Math.abs(camera.width / camera.height - p.width / p.height) > 0.01) {
-    toast('La relación de aspecto de la cámara no coincide con la del proyecto', 'warn', 4500);
-  }
+  if (camera.track !== track) return;
+  saveCamPrefs({ deviceId: track.getSettings?.().deviceId || '', resolution: els.camRes.value });
+  await cameraOpened();
+}
+
+/** Once a camera (or the phone) gives a picture: its saved controls and the project size. */
+async function cameraOpened() {
+  await restoreControls();
+  checkCameraSize();
   buildCamControls();
   updateCamUI();
   keepAwake(true);
   state.dirty = true;
 }
 
+async function restoreControls() {
+  const saved = camPrefs().controls?.[camera.track?.getSettings?.().deviceId];
+  if (saved && Object.keys(saved).length) {
+    await camera.track.applyConstraints({ advanced: [saved] }).catch(() => {});
+  }
+}
+
+function checkCameraSize() {
+  const p = P();
+  if (!camera.width || !camera.height) return;
+  if (!p.frames.length) setProjectSize(camera.width, camera.height);
+  else if (Math.abs(camera.width / camera.height - p.width / p.height) > 0.01) {
+    toast('La relación de aspecto de la cámara no coincide con la del proyecto', 'warn', 4500);
+  }
+}
+
 function stopCamera() {
+  if (phone.on) stopPhone().catch(() => {});
   camera.stop();
   keepAwake(false);
   stopTimelapse();
@@ -1320,6 +1494,7 @@ function stopCamera() {
 }
 
 camera.onEnded = () => {
+  if (camera.remote) { phoneLost(); return; }
   stopCamera();
   reconnectCamera();
 };
@@ -1341,7 +1516,7 @@ async function reconnectCamera() {
 
 function updateCamUI() {
   const on = camera.active;
-  els.camToggle.textContent = on ? 'Desconectar' : 'Conectar';
+  els.camToggle.textContent = on || phone.on ? 'Desconectar' : 'Conectar';
   els.camInfo.textContent = on ? camera.info() : 'Sin señal';
   els.capture.disabled = !on && !state.tether;
   updateStageEmpty();
@@ -1349,6 +1524,7 @@ function updateCamUI() {
 
 function updateStageEmpty() {
   els.stageEmpty.hidden = camera.active || !isLive() || player.playing;
+  $('#btnStartCam').hidden = phone.on; // waiting for the phone: the QR is in Cámara › Fuente
 }
 
 function rememberControl(key, value) {
@@ -1666,7 +1842,7 @@ function updateLoupe() {
   els.loupe.hidden = false;
   const s = S();
   if (isLive() && camera.active && !player.playing) {
-    viewer.drawLoupe(pos.clientX, pos.clientY, pos.u, pos.v, camera.video, camera.width, camera.height, { flipH: s.flipH, flipV: s.flipV });
+    viewer.drawLoupe(pos.clientX, pos.clientY, pos.u, pos.v, camera.video, camera.video.videoWidth, camera.video.videoHeight, { flipH: s.flipH, flipV: s.flipV });
     return;
   }
   const fr = frames();
@@ -3250,10 +3426,14 @@ function bindUI() {
   $('#btnStartCam').addEventListener('click', startCamera);
   els.camToggle.addEventListener('click', () => {
     state.reconnecting = false;
-    if (camera.active) stopCamera(); else startCamera();
+    if (camera.active || phone.on) stopCamera(); else startCamera();
   });
-  els.camDevice.addEventListener('change', () => { if (camera.active || els.camDevice.value) startCamera(); });
-  els.camRes.addEventListener('change', () => { saveCamPrefs({ resolution: els.camRes.value }); if (camera.active) startCamera(); });
+  els.camDevice.addEventListener('change', () => { if (camera.active || phone.on || els.camDevice.value) startCamera(); });
+  els.camRes.addEventListener('change', () => {
+    saveCamPrefs({ resolution: els.camRes.value });
+    if (camera.remote) phoneResolution().catch((err) => toast(`El móvil no pudo cambiar de tamaño: ${err.message}`, 'error', 5000));
+    else if (camera.active) startCamera();
+  });
   $('#btnCamLock').addEventListener('click', async () => {
     try {
       const ok = await camera.lockAuto();
@@ -3289,6 +3469,17 @@ function bindUI() {
     $('#btnBackupOff').addEventListener('click', () => backupAction(backupApi.disable));
   }
   wireRig();
+  if (phoneApi) {
+    phoneApi.onOffer((offer) => phoneOffer(offer).catch((err) => console.warn('Móvil como cámara:', err)));
+    $('#phoneCam').addEventListener('change', () => {
+      camera.remote?.useCamera({ deviceId: $('#phoneCam').value })
+        .catch((err) => toast(`El móvil no pudo cambiar de cámara: ${err.message}`, 'error', 5000));
+    });
+    $('#phoneDark').addEventListener('change', () => {
+      camera.remote?.request({ type: 'screen', dark: $('#phoneDark').checked }).catch(() => {});
+    });
+    setInterval(showPhoneStats, 1000);
+  }
   if (remoteApi) {
     $('#btnRemote').addEventListener('click', toggleRemote);
     remoteApi.onAction((action) => ACTION_RUN[action]?.());
@@ -3571,10 +3762,13 @@ async function init() {
     coachTick(true);
   }
 
-  try {
-    const perm = await navigator.permissions?.query({ name: 'camera' });
-    if (perm?.state === 'granted') startCamera();
-  } catch { /* permissions API unavailable */ }
+  if (els.camDevice.value === 'phone') usePhone({ show: false });
+  else {
+    try {
+      const perm = await navigator.permissions?.query({ name: 'camera' });
+      if (perm?.state === 'granted') startCamera();
+    } catch { /* permissions API unavailable */ }
+  }
 
   // Offline cache for the web version; the apps already ship their files.
   if ('serviceWorker' in navigator && !isApp && /^https?:$/.test(location.protocol)) {

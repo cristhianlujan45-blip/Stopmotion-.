@@ -34,6 +34,12 @@ contextBridge.exposeInMainWorld('mesoraDesktop', {
     onAction: (cb) => ipcRenderer.on('remote:action', (_e, action) => cb(action)),
     onActive: (cb) => ipcRenderer.on('remote:active', (_e, active) => cb(active)),
   },
+  phonecam: {
+    start: () => ipcRenderer.invoke('phonecam:start'),
+    stop: () => ipcRenderer.invoke('phonecam:stop'),
+    onOffer: (cb) => ipcRenderer.on('phonecam:offer', (_e, offer) => cb(offer)),
+    answer: (id, result) => ipcRenderer.send('phonecam:answer', id, result),
+  },
   backup: {
     status: () => ipcRenderer.invoke('backup:status'),
     run: () => ipcRenderer.invoke('backup:run'),

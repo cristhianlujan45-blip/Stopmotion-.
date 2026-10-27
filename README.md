@@ -68,6 +68,7 @@ Las versiones nuevas se instalan encima sin perder tus proyectos.
 
 **Revisión, mando y automatización**
 - **Paquete de revisión**: un HTML que cualquiera abre en su navegador; escribe notas por fotograma y te devuelve un archivo que MESORA coloca en cada fotograma.
+- **Móvil como cámara** por wifi (con código QR): imagen en vivo directa por la red local (WebRTC, sin retraso acumulado) y fotos a la resolución completa del móvil.
 - **Móvil como mando** por wifi (con código QR): disparar, reproducir, moverse por los fotogramas y ver el visor.
 - **API local** para otros programas: [docs/api-local.md](docs/api-local.md).
 
@@ -153,6 +154,7 @@ index.html, css/          interfaz
 js/app.js                 orquestación de la app
 js/library.js, migrate.js biblioteca (disco en escritorio, IndexedDB en web)
 js/camera.js              cámara, controles y promediado
+js/phonecam.js            el móvil como cámara (WebRTC)
 js/viewer-gl.js, viewer.js visor GPU (WebGL2) y 2D
 js/assistant.js           asistente de rodaje
 js/audio.js, lipsync.js   audio multipista y lip sync
@@ -161,7 +163,7 @@ js/dmx.js, moco.js, rig.js luces DMX y motion control
 js/review.js, learn.js    paquete de revisión, modo aprendizaje
 js/i18n.js, i18n-en.js    idiomas
 electron/                 app de escritorio: biblioteca en disco, FFmpeg, carpeta vigilada,
-                          mando del móvil, copias de seguridad, Art-Net
+                          mando y cámara del móvil, copias de seguridad, Art-Net
 firmware/mesora-moco/     firmware Arduino de motion control y su banco de pruebas
 android/                  app de Android (Capacitor)
 tests/                    pruebas unitarias y E2E

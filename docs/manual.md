@@ -42,6 +42,44 @@ deshacer y el botón rojo **Capturar**, siempre visible) y el **timeline** (abaj
 En *Controles de cámara*, **Bloquear automáticos** fija exposición, foco y balance
 para evitar parpadeos (si la cámara lo permite desde el navegador).
 
+### El móvil como cámara, por wifi **(escritorio)**
+
+Cualquier móvil reciente (Android con Chrome, iPhone con Safari) sirve de cámara,
+sin cables y sin instalar nada en él.
+
+1. Pon el móvil en la **misma wifi** que el ordenador y fíjalo en **horizontal**
+   (un soporte o un trípode con adaptador: no debe moverse).
+2. En *Cámara › Fuente › Dispositivo* elige **Móvil por wifi**. Aparece un código QR.
+3. Escanéalo con la cámara del móvil. **La primera vez** el navegador avisa de que
+   «la conexión no es privada»: pulsa *Configuración avanzada* (o *Mostrar
+   detalles*) y *Continuar*. El aviso sale porque el certificado lo ha hecho tu
+   propio ordenador y nadie de fuera lo firma; es normal. Después permite usar la
+   cámara.
+4. En unos segundos MESORA muestra la imagen del móvil y ya puedes capturar.
+
+Cómo funciona y por qué va rápido:
+- La imagen en vivo viaja **directamente del móvil a MESORA** por la red local
+  (WebRTC), sin pasar por internet, ajustada para **no acumular retraso**: cada
+  imagen se muestra en cuanto llega. *Cámara › Fuente* indica la resolución en
+  vivo y el retardo medido en el ordenador (red, espera y decodificación).
+- Cada **foto** la hace el propio móvil a la **resolución completa** de su
+  cámara y la envía entera, aunque la imagen en vivo viaje más pequeña si la wifi
+  va cargada. El promediado de ruido también lo hace el móvil.
+- **Resolución** cambia el tamaño en el móvil sin reconectar; si el móvil tiene
+  varias cámaras (gran angular, tele, frontal) aparece *Cámara del móvil*.
+- *Controles de cámara* y **Bloquear automáticos** actúan sobre el móvil cuando
+  su navegador lo permite (en Android con Chrome suele haber exposición, foco,
+  balance y zoom; en iPhone, menos).
+- **Apagar la pantalla del móvil** la deja en negro para que no ilumine la
+  escena; tocarla la enciende. La página mantiene la pantalla activa mientras
+  está abierta.
+- Si el móvil se bloquea o pierde la wifi, MESORA lo nota en unos segundos y
+  espera; el móvil se vuelve a conectar solo. El enlace y el certificado se
+  guardan: tras reiniciar MESORA, el móvil reconecta sin volver a escanear.
+- Solo un móvil a la vez. Quien tenga el código del QR y esté en tu red puede
+  conectar su cámara mientras *Móvil por wifi* está elegido; al elegir otra
+  cámara, la página del móvil deja de estar disponible.
+
 ### Réflex o sin espejo **(escritorio)**
 
 1. Conecta la cámara por USB y abre su programa oficial de disparo remoto
@@ -198,6 +236,9 @@ atajos** vuelve a los de fábrica. Resumen en el [README](../README.md#atajos-pr
 
 - **No veo la cámara**: comprueba que ningún otro programa la esté usando; en la
   web hace falta `https://` o `localhost`.
+- **El móvil no conecta**: los dos en la misma wifi (no la de invitados, que
+  suele aislar los aparatos); prueba las otras direcciones de *¿No abre?*; en
+  Windows, permite a MESORA las redes privadas si el cortafuegos lo pregunta.
 - **La réflex no manda fotos**: comprueba en su programa oficial la carpeta de
   destino y que sea la misma que elegiste en MESORA.
 - **(escritorio)** *Ayuda › Abrir registro de errores* abre el archivo con los

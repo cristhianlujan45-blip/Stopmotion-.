@@ -46,6 +46,7 @@ export class Camera {
     this.video = video;
     this.stream = null;
     this.track = null;
+    this.remote = null; // a phone over wifi (see phonecam.js)
     this.onEnded = () => {};
   }
 
@@ -63,8 +64,9 @@ export class Camera {
     return !!this.track && this.track.readyState === 'live' && this.video.videoWidth > 0;
   }
 
-  get width() { return this.video.videoWidth; }
-  get height() { return this.video.videoHeight; }
+  // With the phone, the size of its photos: the live view may arrive smaller.
+  get width() { return this.remote?.width || this.video.videoWidth; }
+  get height() { return this.remote?.height || this.video.videoHeight; }
 
   async start({ deviceId, width = 1920, height = 1080 } = {}) {
     this.stop();
@@ -88,8 +90,22 @@ export class Camera {
     }
     this.stream = stream;
     this.track = stream.getVideoTracks()[0];
-    this.track.addEventListener('ended', () => this.onEnded());
-    this.video.srcObject = stream;
+    await this.show();
+  }
+
+  /** Uses the phone connected by `link` (a PhoneLink) as the camera. */
+  async attach(link) {
+    this.stop();
+    this.remote = link;
+    this.stream = link.stream;
+    this.track = link.trackProxy();
+    await this.show();
+  }
+
+  async show() {
+    const track = this.track;
+    track.addEventListener('ended', () => { if (this.track === track) this.onEnded(); });
+    this.video.srcObject = this.stream;
     await this.video.play().catch(() => {});
     if (!this.video.videoWidth) {
       await new Promise((resolve) => {
@@ -101,10 +117,13 @@ export class Camera {
   }
 
   stop() {
-    this.stream?.getTracks().forEach((t) => t.stop());
+    const { remote, stream } = this;
+    this.remote = null;
     this.stream = null;
     this.track = null;
     this.video.srcObject = null;
+    if (remote) remote.close();
+    else stream?.getTracks().forEach((t) => t.stop());
   }
 
   info() {
@@ -198,7 +217,18 @@ export class Camera {
    * Grabs a full-resolution still. With `average` > 1, several consecutive
    * frames are averaged to reduce sensor noise.
    */
-  async grab({ average = 1, flipH = false, flipV = false } = {}) {
+  async grab({ average = 1, flipH = false, flipV = false, format = 'jpeg', quality = 0.95 } = {}) {
+    if (this.remote) {
+      // The phone takes the photo itself at full resolution, flipped, averaged and
+      // encoded as asked; those bytes become the original (`canvas.encoded`).
+      const blob = await this.remote.photo({ average, flipH, flipV, format, quality });
+      const photo = await createImageBitmap(blob);
+      const canvas = makeCanvas(photo.width, photo.height);
+      canvas.getContext('2d').drawImage(photo, 0, 0);
+      photo.close();
+      canvas.encoded = blob;
+      return canvas;
+    }
     const v = this.video;
     const w = v.videoWidth, h = v.videoHeight;
     const canvas = makeCanvas(w, h);
