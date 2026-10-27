@@ -46,6 +46,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm test
       - run: npm run build:web
       - name: Desktop end-to-end test
         shell: bash

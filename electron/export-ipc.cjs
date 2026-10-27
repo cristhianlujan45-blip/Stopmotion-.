@@ -4,7 +4,7 @@
 const path = require('node:path');
 const fsp = require('node:fs/promises');
 const { FORMATS, buildArgs, buildAudioArgs, ExportJob, runOnce, bundledFFmpeg } = require('./core/ffmpeg.cjs');
-const { safeName } = require('./core/fsutil.cjs');
+const { safeName, writeAtomic } = require('./core/fsutil.cjs');
 
 const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 
@@ -101,6 +101,24 @@ function serveExport({ ipcMain, dialog, shell, library, getWindow, fromApp, log 
     const target = await chooseTarget({ ask: spec.ask, isFolder: false, defaultPath: path.join(dir, `${safeName(spec.name, 'mesora')}_${prefix}_${stamp()}.wav`), ext: 'wav' });
     if (!target) return null;
     await runOnce(ffmpeg, buildAudioArgs({ file, startSeconds: spec.startSeconds, durationSeconds: spec.durationSeconds, out: target }));
+    outputs.add(target);
+    return { target };
+  });
+
+  /** Any other file made by the editor (ZIP, PNG, CSV, .mesora…), saved next to the other exports. */
+  ipcMain.handle('export:saveFile', async (event, key, spec) => {
+    guard(event);
+    const { dir } = await library.exportTarget(key);
+    const name = safeName(spec.name, 'archivo');
+    const ext = (/\.([a-z0-9]{1,8})$/i.exec(name)?.[1] || 'bin').toLowerCase();
+    let target = await chooseTarget({ ask: spec.ask, isFolder: false, defaultPath: path.join(dir, name), ext });
+    if (!target) return null;
+    if (!spec.ask) {
+      // Never overwrite an earlier export with the same name.
+      const stem = target.slice(0, target.length - ext.length - 1);
+      for (let i = 2; await fsp.access(target).then(() => true, () => false); i++) target = `${stem} (${i}).${ext}`;
+    }
+    await writeAtomic(target, Buffer.from(spec.bytes));
     outputs.add(target);
     return { target };
   });

@@ -1,6 +1,6 @@
 // MESORA Studio desktop app (Windows, macOS, Linux).
 const {
-  app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, session, shell, systemPreferences,
+  app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, screen, session, shell, systemPreferences,
 } = require('electron');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -181,7 +181,21 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => mainWindow.show());
 
   // External links open in the system browser; the app never navigates away.
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    // Viewer mirror for a second screen: full screen on the external display when there is one.
+    if (frameName === 'mesora-monitor' && (url === '' || url === 'about:blank')) {
+      const here = screen.getDisplayMatching(mainWindow.getBounds());
+      const other = screen.getAllDisplays().find((d) => d.id !== here.id);
+      const area = (other || here).workArea;
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          title: 'MESORA · Monitor', backgroundColor: '#000000', autoHideMenuBar: true,
+          x: area.x + 40, y: area.y + 40, width: Math.min(1280, area.width - 80), height: Math.min(720, area.height - 80),
+          fullscreen: !!other,
+        },
+      };
+    }
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });

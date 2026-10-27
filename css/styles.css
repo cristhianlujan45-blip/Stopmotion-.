@@ -101,7 +101,7 @@ kbd {
 /* ---------- Workspace ---------- */
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 384px;
   min-height: 0;
 }
 .viewer-area {
@@ -184,19 +184,66 @@ kbd {
 .sidepanel {
   background: var(--panel);
   border-left: 1px solid var(--line);
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: row;
   min-height: 0;
 }
-.tabs { display: flex; border-bottom: 1px solid var(--line); flex: none; }
+/* Workspace rail: one icon per workspace, down the left edge of the panel */
+.rail { display: flex; flex-direction: column; gap: 2px; width: 64px; flex: none; padding: 6px 0; border-right: 1px solid var(--line); overflow-y: auto; }
 .tab {
-  flex: 1; height: 38px;
-  background: none; border: 0; border-bottom: 2px solid transparent;
-  color: var(--muted); cursor: pointer; font-weight: 600; font-size: 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 2px;
+  background: none; border: 0; border-left: 2px solid transparent;
+  color: var(--muted); cursor: pointer; font-weight: 600; font-size: 10.5px;
 }
+.tab .ic { width: 20px; height: 20px; }
 .tab:hover { color: var(--text); }
-.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab.active { color: var(--text); border-left-color: var(--accent); background: var(--panel-2); }
+.panels { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .tabpanel { display: none; overflow-y: auto; padding: 6px 14px 20px; flex: 1; }
 .tabpanel.active { display: block; }
+
+/* Simple mode hides studio tools; the X-Sheet workspace widens the panel */
+body:not(.mode-studio) .studio-only { display: none !important; }
+body.ws-xsheet .workspace { grid-template-columns: minmax(0, 1fr) min(760px, 58vw); }
+.mode-switch { flex: none; }
+.mode-switch button { height: 30px; padding: 0 10px; font-size: 12px; }
+
+/* X-Sheet */
+.xsheet-panel.active { display: flex; flex-direction: column; padding-bottom: 6px; }
+.xs-tools { flex: none; display: grid; gap: 6px; padding-bottom: 8px; }
+#xsheet { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.xs-head, .xs-row { display: grid; grid-template-columns: 46px 62px 40px minmax(90px, 1.4fr) minmax(80px, 1.2fr) 66px minmax(70px, 1fr) minmax(60px, 1fr) minmax(80px, 1fr); align-items: center; }
+.xs-head { flex: none; background: var(--panel-2); font-size: 11px; color: var(--muted); font-weight: 600; height: 28px; border-bottom: 1px solid var(--line); }
+.xs-head span, .xs-row > * { padding: 0 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.xs-body { flex: 1; overflow-y: auto; position: relative; }
+.xs-rows { position: absolute; inset: 0 0 auto 0; }
+.xs-row { position: absolute; left: 0; right: 0; height: 28px; border-bottom: 1px solid rgba(255,255,255,.04); font-size: 12px; cursor: pointer; }
+.xs-row input { height: 24px; padding: 0 5px; font-size: 12px; background: transparent; border-color: transparent; width: 100%; }
+.xs-row input:hover, .xs-row input:focus { background: var(--panel-3); border-color: var(--line); }
+.xs-row.first { border-top: 1px solid rgba(255,255,255,.12); }
+.xs-row.todo { color: var(--muted); }
+.xs-row.next { background: rgba(255,77,61,.12); }
+.xs-row.next .fr { color: var(--accent); }
+.xs-row.current { background: rgba(59,130,246,.18); }
+.xs-row .fr { font-weight: 700; }
+
+/* Editable shortcuts in Help */
+.key-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.key-row .what { flex: 1; font-size: 13px; }
+.key-row kbd { white-space: nowrap; }
+.key-row .btn { height: 24px; padding: 0 8px; font-size: 11px; }
+.key-row.listening kbd { outline: 2px solid var(--accent); }
+
+/* Printing the X-Sheet */
+.print-only { display: none; }
+@media print {
+  body.printing-xsheet > *:not(#xsheetPrint) { display: none !important; }
+  body.printing-xsheet { display: block; background: #fff; color: #000; }
+  body.printing-xsheet #xsheetPrint { display: block; font: 10px/1.3 system-ui, sans-serif; }
+  #xsheetPrint table { width: 100%; border-collapse: collapse; }
+  #xsheetPrint th, #xsheetPrint td { border: 1px solid #999; padding: 2px 4px; text-align: left; }
+  #xsheetPrint tr.todo td { color: #777; }
+  #xsheetPrint h1 { font-size: 16px; margin: 0 0 4px; }
+}
 
 .group { padding: 12px 0; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px; }
 .group:last-child { border-bottom: 0; }
@@ -432,7 +479,7 @@ details.menu > summary::-webkit-details-marker { display: none; }
 .project-item .actions { display: flex; gap: 4px; padding: 0 8px 8px; }
 .project-item .actions .btn { height: 26px; padding: 0 8px; font-size: 12px; flex: 1; }
 
-.help-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 24px; }
+.help-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 28px; }
 .help-grid h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin: 16px 0 8px; }
 .help-grid dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 0; align-items: center; }
 .help-grid dt { white-space: nowrap; }
@@ -487,7 +534,7 @@ details.menu > summary::-webkit-details-marker { display: none; }
 @media (max-width: 960px) {
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .sidepanel {
-    position: fixed; top: 48px; right: 0; bottom: 0; width: min(340px, 92vw); z-index: 40;
+    position: fixed; top: 48px; right: 0; bottom: 0; width: min(404px, 96vw); z-index: 40;
     transform: translateX(100%); transition: transform .2s ease;
     box-shadow: -10px 0 40px rgba(0,0,0,.5);
   }
@@ -498,7 +545,7 @@ details.menu > summary::-webkit-details-marker { display: none; }
 @media (max-width: 640px) {
   .topbar { gap: 6px; padding: 0 8px; }
   .brand-name { display: none; }
-  #btnImport, #btnHelp, #btnFullscreen, .save-state span { display: none; }
+  #btnImport, #btnHelp, #btnFullscreen, #btnMonitor, .mode-switch, .take-label, .save-state span { display: none; }
   .note-input { width: 110px; }
   .topbar-actions .btn:not(.icon) { padding: 0 9px; }
   .transport { gap: 8px; }

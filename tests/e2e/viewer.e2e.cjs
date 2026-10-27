@@ -1,6 +1,6 @@
 // Pixel tests of the stage compositor: the GPU (WebGL2) viewer and the Canvas
 // 2D fallback must produce the same images. Runs inside the desktop app
-// (Electron) with SwiftShader, so it also works on machines without a GPU.
+// (Electron) with SwiftShader (except on macOS), so it also works on machines without a GPU.
 // Run with: npm run build:web && npm run test:viewer   (xvfb-run -a on Linux without a display)
 const { _electron: electron } = require('playwright-core');
 const fs = require('node:fs');
@@ -10,10 +10,13 @@ const os = require('node:os');
 const repo = path.join(__dirname, '..', '..');
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mesora-viewer-'));
 
+// SwiftShader on Linux and Windows; macOS runners have a virtual Metal GPU instead.
+const GPU_ARGS = process.platform === 'darwin' ? [] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+
 (async () => {
   const app = await electron.launch({
     executablePath: require('electron'),
-    args: [repo, '--no-sandbox', `--user-data-dir=${work}/perfil`, '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+    args: [repo, '--no-sandbox', `--user-data-dir=${work}/perfil`, ...GPU_ARGS],
     env: { ...process.env, MESORA_LIBRARY: path.join(work, 'lib'), MESORA_TEST: '1' },
   });
   const win = await app.firstWindow();

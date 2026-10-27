@@ -34,18 +34,20 @@ export class AudioTrack {
   }
 
   /** Plays from `atSeconds` (negative = start after a delay). */
-  play(atSeconds, destination) {
+  /** Plays from `atSeconds` (negative: starts after a delay). `rate` < 1 plays slower, staying in sync with slow review. */
+  play(atSeconds, destination, rate = 1) {
     this.stop();
     if (!this.buffer) return;
     const ctx = this.context();
     const src = ctx.createBufferSource();
     src.buffer = this.buffer;
+    src.playbackRate.value = rate;
     src.connect(destination || ctx.destination);
     if (atSeconds >= 0) {
       if (atSeconds >= this.buffer.duration) return;
       src.start(0, atSeconds);
     } else {
-      src.start(ctx.currentTime - atSeconds, 0);
+      src.start(ctx.currentTime - atSeconds / rate, 0);
     }
     this.source = src;
   }

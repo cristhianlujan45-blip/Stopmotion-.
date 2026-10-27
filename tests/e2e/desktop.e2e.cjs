@@ -15,19 +15,23 @@ const shots = process.env.MESORA_E2E_SHOTS;
 const log = (...a) => console.log('·', ...a);
 const check = (cond, msg) => { if (!cond) throw new Error(`FALLO: ${msg}`); log('OK', msg); };
 
+// GPU by software on Linux and Windows, so the WebGL2 viewer is exercised even on machines without a
+// graphics card. macOS runners have a virtual Metal GPU, and SwiftShader is not available there.
+const GPU_ARGS = process.platform === 'darwin' ? [] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+const current = {}; // the running app, for the failure report
+
 async function launch() {
   const app = await electron.launch({
     // require('electron') returns the binary path and downloads it first if needed (Electron 45 has no postinstall).
     executablePath: require('electron'),
-    args: [repo, '--no-sandbox', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
-      // GPU by software, so the WebGL2 viewer is exercised even on machines without a graphics card.
-      '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+    args: [repo, '--no-sandbox', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', ...GPU_ARGS],
     env: { ...process.env, MESORA_LIBRARY: libDir, MESORA_TEST: '1' },
   });
   const win = await app.firstWindow();
   const errors = [];
   win.on('pageerror', (e) => errors.push(String(e)));
   win.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  Object.assign(current, { app, win, errors });
   await win.waitForFunction(() => window.mesora?.state?.project, null, { timeout: 20000 });
   return { app, win, errors };
 }
@@ -230,6 +234,58 @@ const listTakes = () => {
   await win.keyboard.press('Control+s');
   await win.waitForTimeout(800);
 
+  // 7d) Espacios de trabajo, modo estudio, X-Sheet, atajos y segunda pantalla.
+  check(!(await win.isVisible('.tab[data-tab="xsheet"]')), 'en modo sencillo no aparece el X-Sheet');
+  await win.click('[data-uimode="studio"]');
+  await win.click('.tab[data-tab="xsheet"]');
+  check(await win.evaluate(() => document.body.classList.contains('ws-xsheet')), 'modo estudio: espacio de trabajo X-Sheet');
+  await win.fill('.xs-row[data-exposure="2"] input[data-key="dialog"]', 'Hola');
+  await win.fill('.xs-row[data-exposure="2"] input[data-key="phoneme"]', 'O');
+  await win.click('#viewerArea');
+  await win.keyboard.press('Control+s');
+  await win.waitForTimeout(800);
+  const sceneJson = () => JSON.parse(fs.readFileSync(path.join(libDir, 'Corto E2E', 'scenes', 'sc010', 'scene.json')));
+  check(sceneJson().settings.xsheet.plan['2'].dialog === 'Hola', 'el plan del X-Sheet se guarda en la escena');
+  // Duplicating frame 1 shifts the pictures, not the dialogue: it stays at exposure 2.
+  await win.evaluate(() => { const st = window.mesora.state; st.selection = new Set([st.project.frames[0].key]); st.playhead = 0; });
+  await win.keyboard.press('Control+d');
+  await win.waitForTimeout(300);
+  check(await win.inputValue('.xs-row[data-exposure="2"] input[data-key="dialog"]') === 'Hola', 'el diálogo sigue en su exposición aunque cambien los fotogramas');
+  await win.keyboard.press('Control+z');
+  await win.click('#btnXsCsv');
+  await win.waitForSelector('.toast.ok:has-text("X-Sheet exportado")');
+  const csvName = fs.readdirSync(path.join(libDir, 'Corto E2E', 'exports')).find((n) => n.endsWith('_xsheet.csv'));
+  check(csvName && fs.readFileSync(path.join(libDir, 'Corto E2E', 'exports', csvName), 'utf8').includes(',Hola,O,'), 'CSV del X-Sheet en «exports» con lo planificado');
+
+  // Custom shortcut: onion skin on K.
+  await win.keyboard.press('?');
+  const onionRow = win.locator('.key-row', { hasText: 'Papel cebolla' });
+  await onionRow.locator('button').click();
+  await win.keyboard.press('k');
+  await win.keyboard.press('Escape');
+  const onionBefore = await win.evaluate(() => window.mesora.state.project.settings.onion.enabled);
+  await win.keyboard.press('k');
+  check(await win.evaluate(() => window.mesora.state.project.settings.onion.enabled) === !onionBefore, 'un atajo personalizado (K = papel cebolla) funciona');
+  await win.keyboard.press('k');
+  await win.keyboard.press('?');
+  await win.click('#btnResetKeys');
+  await win.keyboard.press('Escape');
+
+  // Ctrl+3 (studio): captures one frame held for 3 exposures.
+  const nBefore = await win.evaluate(() => window.mesora.state.project.frames.length);
+  await win.keyboard.press('Control+3');
+  await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 1 && window.mesora.state.pendingCaptures === 0, nBefore, { timeout: 15000 });
+  check(await win.evaluate(() => window.mesora.state.project.frames.at(-1).hold) === 3, 'Ctrl+3 captura un fotograma que dura 3 cuadros');
+  await win.keyboard.press('Control+z');
+
+  // Second screen.
+  const [monitor] = await Promise.all([app.waitForEvent('window'), win.click('#btnMonitor')]);
+  await monitor.waitForFunction(() => document.getElementById('monitor')?.srcObject?.getVideoTracks().length === 1, null, { timeout: 10000 });
+  log('OK la segunda pantalla recibe la imagen del visor');
+  await monitor.close();
+  await win.click('[data-uimode="simple"]');
+  check(!(await win.evaluate(() => document.body.classList.contains('ws-xsheet'))), 'al volver al modo sencillo se sale del X-Sheet');
+
   // 8) Proyectos agrupados: un grupo por proyecto y una fila por toma.
   await win.click('#btnProjects');
   await win.waitForSelector('.prod-group');
@@ -251,6 +307,8 @@ const listTakes = () => {
   await win.click('#takeLabel');
   await win.waitForSelector('#modalProjects:not([hidden]) .take-row');
   const group = win.locator('.prod-group.current');
+  // The list is refreshed from the disk after the window opens.
+  await win.waitForFunction(() => document.querySelectorAll('.prod-group.current .take-row').length === 2, null, { timeout: 5000 }).catch(() => {});
   check(await group.locator('.take-row').count() === 2, 'el proyecto muestra sus 2 tomas');
   await group.locator('.take-row', { hasText: 'Toma 1' }).locator('[data-act="open"]').click();
   await win.waitForFunction(() => window.mesora.state.project.take?.name === 'Toma 1' && window.mesora.state.project.frames.length === 3);
@@ -281,4 +339,15 @@ const listTakes = () => {
   await app.close();
   fs.rmSync(work, { recursive: true, force: true });
   console.log('\nTODO OK');
-})().catch((e) => { console.error(e); process.exit(1); });
+})().catch(async (e) => {
+  console.error(e);
+  // What the app saw: page errors, visible notices and the end of its log file.
+  const { app, win, errors } = current;
+  if (errors?.length) console.error('Errores de la página:', errors.join('\n'));
+  const toasts = await win?.$$eval('.toast', (els) => els.map((t) => t.textContent)).catch(() => []);
+  if (toasts?.length) console.error('Avisos en pantalla:', toasts.join(' | '));
+  const logFile = await app?.evaluate(({ app: a }) => require('node:path').join(a.getPath('logs'), 'mesora.log')).catch(() => null);
+  if (logFile && fs.existsSync(logFile)) console.error('Final del registro:\n', fs.readFileSync(logFile, 'utf8').split('\n').slice(-40).join('\n'));
+  await app?.close().catch(() => {});
+  process.exit(1);
+});

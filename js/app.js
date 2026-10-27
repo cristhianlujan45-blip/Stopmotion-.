@@ -9,6 +9,9 @@ import { FrameStore, isRawFile } from './framestore.js';
 import { History } from './history.js';
 import { AudioTrack } from './audio.js';
 import { createViewer } from './viewer-gl.js';
+import { ACTIONS, Keymap, comboOf, comboLabel } from './shortcuts.js';
+import { XSheetView, xsheetToCSV, xsheetFromCSV, xsheetTableHTML } from './xsheet.js';
+import { openMonitor } from './monitor.js';
 import { Timeline } from './timeline.js';
 import {
   totalExposures, expandExposures, exposureStart, formatTime, moveItems, computeSpacing,
@@ -23,6 +26,9 @@ const LS_CAMERA = 'mesora.camera';
 const LS_WELCOMED = 'mesora.welcomed';
 const LS_SECTIONS = 'mesora.sections';
 const LS_UPDATE_CHECK = 'mesora.updateCheck';
+const LS_KEYS = 'mesora.keys';
+const LS_UI_MODE = 'mesora.uiMode';
+const LS_WORKSPACE = 'mesora.workspace';
 const GRID_CYCLE = ['none', 'thirds', 'quarters', 'fine', 'center'];
 
 function defaultSettings() {
@@ -48,6 +54,8 @@ function defaultSettings() {
     delay: 0,
     shutterSound: true,
     tether: { folder: '', assist: true },
+    xsheet: { animator: '', length: 48, plan: {} },
+    playSpeed: 1,
     display: 'preview',
     shortPlay: 6,
     loop: false,
@@ -418,14 +426,18 @@ function startPlayback({ start = 0, end = frames().length, loop = S().loop, ping
   refresh();
 }
 
+/** Review speed (studio mode): 1, 0.5 or 0.25. The project frame rate does not change. */
+const playSpeed = () => (document.body.classList.contains('mode-studio') ? S().playSpeed || 1 : 1);
+
 function playAudioFrom(pos) {
   if (!audio.ready || player.pingpong) return;
   const p = P();
-  audio.play((player.startExposure + pos - (p.audio?.offset || 0)) / p.fps);
+  const speed = playSpeed();
+  audio.play((player.startExposure + pos - (p.audio?.offset || 0)) / p.fps, undefined, speed);
 }
 
 function tickPlayer(now) {
-  const fps = P().fps;
+  const fps = P().fps * playSpeed();
   const n = player.exposures.length;
   let step = Math.floor(((now - player.t0) * fps) / 1000);
   let pos;
@@ -585,6 +597,7 @@ function afterFramesChanged() {
   const keys = new Set(fr.map((f) => f.key));
   for (const k of state.selection) if (!keys.has(k)) state.selection.delete(k);
   renderTimeline();
+  renderXSheet();
   saveSoon();
   scheduleGains();
   refresh();
@@ -706,7 +719,7 @@ function flash() {
 // so rapid captures are never dropped.
 let saveChain = Promise.resolve();
 
-async function capture(mode = 'append', { skipDelay = false } = {}) {
+async function capture(mode = 'append', { skipDelay = false, hold = 1 } = {}) {
   if (state.busy) return;
   if (!camera.active && state.tether) {
     toast('Dispara con tu cámara o desde su programa: la foto entrará sola en MESORA.', 'info', 4000);
@@ -739,7 +752,7 @@ async function capture(mode = 'append', { skipDelay = false } = {}) {
     if (!frames().length) setProjectSize(canvas.width, canvas.height);
     const { id } = await store.addFromCanvas(project.id, canvas, { format: s.format, quality: s.quality });
     if (P() !== project) return;
-    const entry = { key: uid(), id, hold: 1 };
+    const entry = { key: uid(), id, hold };
     commit((fr) => {
       const at = state.playhead;
       if (mode === 'replace' && at < fr.length) {
@@ -1063,6 +1076,7 @@ const fmtNum = (v) => (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 100) 
 function refresh() {
   state.dirty = true;
   timeline.update({ playhead: state.playhead, selection: state.selection, playingIndex: player.playing ? player.index : -1 });
+  if (document.body.classList.contains('ws-xsheet')) xsheetView.setCurrent(player.playing ? player.index : isLive() ? -1 : state.playhead);
   updateHud();
   updateTransport();
   updateStageEmpty();
@@ -1220,6 +1234,7 @@ function onSettingChanged(path) {
   if (path === 'timelapseInterval' && state.timelapseTimer) { stopTimelapse(); startTimelapse(); }
   if (path === 'grade.deflicker') { state.gains = new Map(); scheduleGains(); }
   if (path === 'display') applyDisplayKind();
+  if (path.startsWith('xsheet.')) renderXSheet();
   updateHudFlags();
   updateTransport();
 }
@@ -1985,6 +2000,12 @@ async function exportFilters(a, b) {
 }
 
 async function deliver(blob, filename, message) {
+  // Desktop: into the project's "exports" folder (or where the user picks), like films and image sequences.
+  if (exportApi && P()?.storage === 'disk') {
+    const r = await exportApi.saveFile(P().id, { name: filename, bytes: await blob.arrayBuffer(), ask: $('#dxAsk').checked });
+    if (r) toast(message, 'ok', 8000, [{ label: 'Mostrar', onClick: () => exportApi.reveal(r.target).catch((err) => toast(err.message, 'error')) }]);
+    return;
+  }
   const where = await saveFile(blob, filename);
   toast(where ? `${message} en ${where}` : message, 'ok', 4000);
 }
@@ -2240,6 +2261,53 @@ function showWelcome() {
 
 // ---------------------------------------------------------------- keyboard
 
+const keymap = new Keymap((() => { try { return JSON.parse(localStorage.getItem(LS_KEYS)) || {}; } catch { return {}; } })());
+
+/** What each shortcut action does. */
+const ACTION_RUN = {
+  capture: () => capture('append'),
+  captureReplace: () => capture('replace'),
+  captureInsert: () => capture('insert'),
+  ...Object.fromEntries([2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`captureHold${n}`, () => capture('append', { hold: n })])),
+  play: () => togglePlay(),
+  shortPlay: () => shortPlay(),
+  loop: () => setSetting('loop', !S().loop),
+  pingpong: () => setSetting('pingpong', !S().pingpong),
+  prev: () => step(-1),
+  next: () => step(1),
+  extendLeft: () => extendSelection(-1),
+  extendRight: () => extendSelection(1),
+  toggleLive: () => toggleLiveLast(),
+  live: () => goLive(),
+  first: () => setPlayhead(0),
+  onion: () => setSetting('onion.enabled', !S().onion.enabled),
+  difference: () => setMode('difference'),
+  blink: () => toggleBlink(),
+  grid: () => setSetting('grid', GRID_CYCLE[(GRID_CYCLE.indexOf(S().grid) + 1) % GRID_CYCLE.length]),
+  peaking: () => setSetting('peaking', !S().peaking),
+  loupe: () => toggleLoupe(),
+  fullscreen: () => toggleFullscreen(),
+  delete: () => deleteSelected(),
+  duplicate: () => duplicateSelected(),
+  selectAll: () => selectAll(),
+  holdMore: () => changeHold(1),
+  holdLess: () => changeHold(-1),
+  note: () => {
+    if (els.frameNote.disabled) toast('Elige un fotograma en la línea de tiempo para anotarlo', 'info', 2000);
+    else { els.frameNote.focus(); els.frameNote.select(); }
+  },
+  undo: () => undo(),
+  redo: () => redo(),
+  save: () => { saveSoon.flush(); toast('Proyecto guardado', 'ok', 1400); },
+  help: () => openModal('#modalHelp'),
+  escape: () => {
+    if (state.drawing) toggleDrawing(false);
+    else if (player.playing) stopPlayback(false);
+    else if (state.blink) toggleBlink();
+  },
+};
+const ACTION_INFO = new Map(ACTIONS.map((a) => [a.id, a]));
+
 function onKeyDown(e) {
   const modal = $$('.modal').reverse().find((m) => !m.hidden);
   if (isTypingTarget(e.target)) {
@@ -2253,58 +2321,149 @@ function onKeyDown(e) {
     if (e.key === 'Escape') closeModal(modal);
     return;
   }
-  const k = e.key;
-  if (e.ctrlKey || e.metaKey) {
-    switch (k.toLowerCase()) {
-      case 'z': if (e.shiftKey) redo(); else undo(); break;
-      case 'y': redo(); break;
-      case 'd': duplicateSelected(); break;
-      case 'a': selectAll(); break;
-      case 's': saveSoon.flush(); toast('Proyecto guardado', 'ok', 1400); break;
-      default: return;
-    }
-    e.preventDefault();
-    return;
-  }
-  if (e.repeat && ['Enter', ' ', '0', '6'].includes(k)) { e.preventDefault(); return; }
-  switch (k) {
-    case 'Enter': capture(e.shiftKey ? 'replace' : e.altKey ? 'insert' : 'append'); break;
-    case ' ': case '0': togglePlay(); break;
-    case '1': step(-1); break;
-    case '3': step(1); break;
-    case 'ArrowLeft': if (e.shiftKey) extendSelection(-1); else step(-1); break;
-    case 'ArrowRight': if (e.shiftKey) extendSelection(1); else step(1); break;
-    case '2': case 'Tab': toggleLiveLast(); break;
-    case '5': case 'End': goLive(); break;
-    case 'Home': setPlayhead(0); break;
-    case '6': shortPlay(); break;
-    case '8': case 'l': case 'L': setSetting('loop', !S().loop); break;
-    case 'p': case 'P': setSetting('pingpong', !S().pingpong); break;
-    case 'o': case 'O': setSetting('onion.enabled', !S().onion.enabled); break;
-    case 'd': case 'D': setMode('difference'); break;
-    case 'b': case 'B': toggleBlink(); break;
-    case 'g': case 'G': setSetting('grid', GRID_CYCLE[(GRID_CYCLE.indexOf(S().grid) + 1) % GRID_CYCLE.length]); break;
-    case 'f': case 'F':
-      if (e.shiftKey) toggleFullscreen();
-      else setSetting('peaking', !S().peaking);
-      break;
-    case 'n': case 'N':
-      if (els.frameNote.disabled) toast('Elige un fotograma en la línea de tiempo para anotarlo', 'info', 2000);
-      else { els.frameNote.focus(); els.frameNote.select(); }
-      break;
-    case 'z': case 'Z': toggleLoupe(); break;
-    case 'Delete': case 'Backspace': deleteSelected(); break;
-    case '+': case '=': changeHold(1); break;
-    case '-': case '_': changeHold(-1); break;
-    case '?': openModal('#modalHelp'); break;
-    case 'Escape':
-      if (state.drawing) toggleDrawing(false);
-      else if (player.playing) stopPlayback(false);
-      else if (state.blink) toggleBlink();
-      break;
-    default: return;
-  }
+  const combo = comboOf(e);
+  const action = combo && keymap.actionFor(combo);
+  if (!action) return;
+  const info = ACTION_INFO.get(action);
+  if (info.studio && !document.body.classList.contains('mode-studio')) return;
   e.preventDefault();
+  if (e.repeat && info.noRepeat) return;
+  ACTION_RUN[action]();
+}
+
+/** Help › shortcuts: lists every action with its keys and lets the user change them. */
+function renderShortcuts() {
+  const root = $('#shortcutList');
+  root.innerHTML = '';
+  const groups = new Map();
+  for (const a of ACTIONS) {
+    if (a.studio && !document.body.classList.contains('mode-studio')) continue;
+    if (a.fixed && a.id !== 'captureHold2') continue;
+    if (!groups.has(a.group)) groups.set(a.group, []);
+    groups.get(a.group).push(a);
+  }
+  for (const [group, actions] of groups) {
+    const box = document.createElement('div');
+    box.innerHTML = `<h3></h3>`;
+    box.querySelector('h3').textContent = group;
+    for (const a of actions) {
+      const row = document.createElement('div');
+      row.className = 'key-row';
+      const keys = keymap.keys.get(a.id);
+      row.innerHTML = `<span class="what"></span><span class="keys">${keys.map((k) => `<kbd></kbd>`).join(' ')}</span><button class="btn ghost">Cambiar</button>`;
+      row.querySelector('.what').textContent = a.label;
+      row.querySelectorAll('kbd').forEach((el, i) => { el.textContent = comboLabel(keys[i]); });
+      if (!keys.length) row.querySelector('.keys').innerHTML = '<span class="muted small">sin atajo</span>';
+      if (a.fixed) {
+        row.querySelector('.what').textContent = 'Capturar y mantener 2 a 9 cuadros';
+        row.querySelector('.keys').innerHTML = '<kbd>Ctrl + 2 … 9</kbd>';
+        row.querySelector('button').remove();
+      } else {
+        row.querySelector('button').addEventListener('click', () => listenForKey(a, row));
+      }
+      box.append(row);
+    }
+    root.append(box);
+  }
+}
+
+function listenForKey(action, row) {
+  row.classList.add('listening');
+  row.querySelector('.keys').innerHTML = '<kbd>Pulsa una tecla…</kbd>';
+  const onKey = (e) => {
+    const combo = comboOf(e);
+    if (!combo) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    window.removeEventListener('keydown', onKey, true);
+    if (combo !== 'Escape') {
+      const lost = keymap.assign(action.id, combo);
+      localStorage.setItem(LS_KEYS, JSON.stringify(keymap.changes()));
+      if (lost) toast(`«${ACTION_INFO.get(lost).label}» se ha quedado sin atajo`, 'warn', 4000);
+    }
+    renderShortcuts();
+  };
+  window.addEventListener('keydown', onKey, true);
+}
+
+// ---------------------------------------------------------------- workspaces and interface mode
+
+function setWorkspace(tab) {
+  if (!$(`.tab[data-tab="${tab}"]`) || ($(`.tab[data-tab="${tab}"]`).classList.contains('studio-only') && !document.body.classList.contains('mode-studio'))) tab = 'camera';
+  for (const t of $$('.tab')) t.classList.toggle('active', t.dataset.tab === tab);
+  for (const p of $$('.tabpanel')) p.classList.toggle('active', p.dataset.panel === tab);
+  for (const c of [...document.body.classList]) if (c.startsWith('ws-')) document.body.classList.remove(c);
+  document.body.classList.add(`ws-${tab}`);
+  localStorage.setItem(LS_WORKSPACE, tab);
+  if (tab === 'xsheet') renderXSheet(true);
+}
+
+/** Sencillo: the essentials. Estudio: X-Sheet, multi-frame capture keys, review speed and more. */
+function setUiMode(mode) {
+  const studio = mode === 'studio';
+  document.body.classList.toggle('mode-studio', studio);
+  for (const b of $$('[data-uimode]')) b.classList.toggle('active', b.dataset.uimode === mode);
+  localStorage.setItem(LS_UI_MODE, mode);
+  if (!studio && $('.tab.active')?.classList.contains('studio-only')) setWorkspace('view');
+  renderShortcuts();
+}
+
+// ---------------------------------------------------------------- X-Sheet
+
+const xsheetView = new XSheetView({
+  root: $('#xsheet'),
+  onSelect: (i) => (i >= 0 ? onTimelineSelect(i, {}) : goLive()),
+  onPlan: (exposure, key, value) => {
+    const plan = S().xsheet.plan;
+    const row = { ...(plan[exposure] || {}) };
+    if (value.trim()) row[key] = value; else delete row[key];
+    if (Object.keys(row).length) plan[exposure] = row; else delete plan[exposure];
+    saveSoon();
+  },
+  onNote: (i, text) => {
+    const f = frames()[i];
+    if (!f) return;
+    const note = text.trim();
+    if ((f.note || '') === note) return;
+    commit((fr) => { if (note) fr[i].note = note; else delete fr[i].note; });
+  },
+});
+
+function renderXSheet(force = false) {
+  if (!document.body.classList.contains('ws-xsheet') && !force) return;
+  const x = S().xsheet;
+  xsheetView.update({ frames: frames(), plan: x.plan, length: Number(x.length) || 48, fps: P().fps, current: isLive() ? -1 : state.playhead });
+  xsheetView.reveal(isLive() ? -1 : state.playhead);
+}
+
+async function exportXSheetCSV() {
+  const x = S().xsheet;
+  const csv = xsheetToCSV(frames(), x.plan, Number(x.length) || 48, P().fps);
+  const name = `${safeFileName(P().name)}${P().scene ? `_${P().scene.id}_${P().take.id}` : ''}_xsheet.csv`;
+  await deliver(new Blob(['﻿', csv], { type: 'text/csv' }), name, 'X-Sheet exportado');
+}
+
+async function importXSheetCSV(file) {
+  const plan = xsheetFromCSV(await file.text());
+  const n = Object.keys(plan).length;
+  if (!n) { toast('El CSV no tiene columnas de Acción, Diálogo, Fonema, Cámara o Luz', 'warn', 5000); return; }
+  if (Object.keys(S().xsheet.plan).length && !confirm(`¿Sustituir lo planificado en el X-Sheet por las ${n} filas del CSV?`)) return;
+  S().xsheet.plan = plan;
+  saveSoon();
+  renderXSheet(true);
+  toast(`${n} filas importadas al X-Sheet`, 'ok');
+}
+
+function printXSheet() {
+  const p = P();
+  const x = S().xsheet;
+  $('#xsheetPrint').innerHTML = xsheetTableHTML(frames(), x.plan, Number(x.length) || 48, p.fps, {
+    title: `${p.name}${p.scene ? ` · ${p.scene.name} · ${p.take.name}` : ''}`,
+    subtitle: `${p.fps} fps${x.animator ? ` · Animación: ${x.animator}` : ''} · ${formatDate(Date.now())}`,
+  });
+  document.body.classList.add('printing-xsheet');
+  window.print();
+  document.body.classList.remove('printing-xsheet');
 }
 
 // ---------------------------------------------------------------- UI wiring
@@ -2502,12 +2661,23 @@ function bindUI() {
     });
   }
 
-  for (const tab of $$('.tab')) {
-    tab.addEventListener('click', () => {
-      for (const t of $$('.tab')) t.classList.toggle('active', t === tab);
-      for (const p of $$('.tabpanel')) p.classList.toggle('active', p.dataset.panel === tab.dataset.tab);
-    });
-  }
+  for (const tab of $$('.tab')) tab.addEventListener('click', () => setWorkspace(tab.dataset.tab));
+  for (const b of $$('[data-uimode]')) b.addEventListener('click', () => setUiMode(b.dataset.uimode));
+  setUiMode(localStorage.getItem(LS_UI_MODE) === 'studio' ? 'studio' : 'simple');
+  setWorkspace(localStorage.getItem(LS_WORKSPACE) || 'camera');
+  $('#btnResetKeys').addEventListener('click', () => {
+    keymap.reset();
+    localStorage.removeItem(LS_KEYS);
+    renderShortcuts();
+    toast('Atajos restablecidos', 'ok');
+  });
+  $('#btnMonitor').addEventListener('click', () => {
+    if (!openMonitor($('#mainCanvas'))) toast('Permite las ventanas emergentes para usar la segunda pantalla', 'warn', 5000);
+  });
+  $('#btnXsCsv').addEventListener('click', () => exportXSheetCSV().catch((err) => toast(err.message, 'error')));
+  $('#btnXsImport').addEventListener('click', () => $('#fileXsCsv').click());
+  $('#fileXsCsv').addEventListener('change', (e) => { if (e.target.files[0]) importXSheetCSV(e.target.files[0]); e.target.value = ''; });
+  $('#btnXsPrint').addEventListener('click', printXSheet);
   $('#btnPanel').addEventListener('click', () => $('#sidepanel').classList.toggle('open'));
 
   // Drag & drop files from the OS.
