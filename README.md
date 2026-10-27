@@ -1,179 +1,187 @@
 # MESORA Studio
 
-Un estudio de animación **stop motion** para **Windows, Mac, Android** y el navegador. Es gratuito.
-Captura con tu webcam, una cámara USB, tu réflex en modo webcam o la cámara del móvil. Anima con papel cebolla y exporta a MP4/WebM o a secuencia de imágenes.
+Estudio de animación **stop motion** gratuito y de código abierto para **Windows, Mac,
+Android** y el navegador (en Linux, desde el código fuente o en el navegador). Captura con una webcam, una cámara USB, tu
+**réflex o sin espejo** (también en RAW) o la cámara del móvil; anima con papel
+cebolla, X-Sheet, lip sync, luces DMX y motion control; y exporta en MP4, ProRes o
+secuencias de imágenes.
+
+*English: MESORA Studio is a free, open-source stop-motion studio. The interface is
+available in Spanish and English (Help › Language). See [In English](#in-english).*
 
 ## Descargar e instalar
 
-Las descargas están en la página de **[Releases](https://github.com/cristhianlujan45-blip/MESORA-/releases)** del repositorio. Se generan solas en cada cambio, mediante GitHub Actions.
+Las descargas están en la página de **[Releases](https://github.com/cristhianlujan45-blip/MESORA-/releases)**. Se generan solas con GitHub Actions.
 
 | Sistema | Archivo | Cómo instalar |
 | --- | --- | --- |
-| **Windows 10/11** | `MESORA-Studio-Windows-Instalador-x.y.z.exe` | Ábrelo y sigue el asistente. Si Windows muestra «Windows protegió su PC», pulsa **Más información → Ejecutar de todas formas** (aparece porque la app no tiene firma de pago). |
-| Windows sin instalar | `MESORA-Studio-Windows-Portable-x.y.z.exe` | Doble clic y listo. Sirve para un pendrive o un equipo sin permisos de administrador. |
-| **Mac** (Intel y Apple Silicon) | `MESORA-Studio-Mac-x.y.z.dmg` | Abre el .dmg y arrastra MESORA Studio a **Aplicaciones**. La primera vez macOS dirá que no puede verificar al desarrollador: ve a **Ajustes del Sistema → Privacidad y seguridad** y pulsa **Abrir igualmente**. Después acepta el permiso de cámara. |
-| **Android 7+** | `MESORA-Studio-Android-x.y.z.apk` | Descarga el APK en el móvil y ábrelo. Si lo pide, permite **instalar apps de origen desconocido** para tu navegador o gestor de archivos. Las exportaciones se guardan en **Documentos/MESORA** y se pueden compartir al momento. |
+| **Windows 10/11** | `MESORA-Studio-Windows-Instalador-x.y.z.exe` | Ábrelo y sigue el asistente. Si Windows muestra «Windows protegió su PC», pulsa **Más información → Ejecutar de todas formas** (sale porque la app no tiene una firma de pago). |
+| Windows sin instalar | `MESORA-Studio-Windows-Portable-x.y.z.exe` | Doble clic. Sirve para un pendrive o un equipo sin permisos de administrador. |
+| **Mac** (Intel y Apple Silicon) | `MESORA-Studio-Mac-x.y.z.dmg` | Arrastra MESORA Studio a **Aplicaciones**. La primera vez: **Ajustes del Sistema → Privacidad y seguridad → Abrir igualmente**, y acepta el permiso de cámara. |
+| **Android 7+** | `MESORA-Studio-Android-x.y.z.apk` | Ábrelo en el móvil; si lo pide, permite **instalar apps de origen desconocido**. |
 
-Las versiones nuevas se instalan encima de la anterior sin perder tus proyectos.
+Las versiones nuevas se instalan encima sin perder tus proyectos.
 
-### Versión web
-
-```bash
-npm start          # abre http://localhost:5173
-```
-
-También se puede publicar tal cual en cualquier hosting estático con HTTPS (GitHub Pages, Netlify…).
-La cámara solo está disponible en `https://` o `localhost`. Abrir `index.html` directamente desde el disco no funciona.
-
-Navegadores: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes.
+**Versión web:** `npm start` y abre <http://localhost:5173> (o publícala en cualquier hosting con HTTPS). La cámara solo funciona en `https://` o `localhost`. Navegadores: Chrome/Edge 100+ (recomendado), Firefox o Safari recientes.
 
 ## Primeros pasos
 
-La primera vez que abres MESORA aparece una **guía de inicio** en cuatro pasos. Puedes volver a abrirla desde el botón **?**.
-Cada panel explica para qué sirve y las opciones avanzadas están plegadas para no abrumar.
+- La primera vez aparece una **guía de inicio**. Con **Aprender paso a paso** (también en *Ayuda › Modo aprendizaje*) MESORA te acompaña en tu primera animación y avanza sola cuando haces cada cosa.
+- Arriba eliges el modo: **Sencillo** (lo esencial, por defecto) o **Estudio** (añade X-Sheet, lip sync, luces, movimiento, atajos de captura múltiple…).
+- **Idioma**: español o inglés, en la bienvenida o en *Ayuda*.
+- Manual completo: [docs/manual.md](docs/manual.md).
 
 ## Funciones
 
 **Captura**
-- Vista en vivo de cualquier cámara del sistema, a resoluciones de hasta 4K.
-- **Promediado de ruido**: combina 2–16 cuadros por captura para obtener imágenes limpias con poca luz.
-- Controles de hardware cuando la cámara los expone: exposición, ISO, foco, balance de blancos, zoom, etc.
-- **Bloquear automáticos** para evitar el parpadeo de exposición entre fotogramas. Los ajustes se recuerdan por cámara.
-- Espejo y volteo, JPEG o PNG sin pérdida, retardo de disparo de 2, 5 o 10 s y sonido de obturador.
-- Captura en cola: puedes disparar rápido sin perder fotogramas.
-- Reemplazar el fotograma actual (`Shift+Enter`) o insertar después de él (`Alt+Enter`).
-- **Intervalómetro** para time-lapse.
+- Webcam, cámara USB o capturadora HDMI hasta 4K, con promediado de ruido (2–16 cuadros), bloqueo de automáticos, retardo, intervalómetro y reconexión automática si se pierde la señal.
+- **Réflex y sin espejo** de cualquier marca con su programa oficial (EOS Utility, NX Tether, Imaging Edge, X Acquire…): MESORA vigila la carpeta donde guarda las fotos y añade cada una en cuanto termina de escribirse. **RAW** (CR2, CR3, NEF, ARW, RAF, ORF, RW2, DNG…) intacto, mostrado y exportado con su JPEG incrustado; RAW + JPEG cuentan como una sola foto.
+- **Video assist**: con una webcam o capturadora a la vez, cada foto guarda también la imagen del vivo.
+- **Foto de prueba** fuera de la animación y comparación A/B con el vivo.
+- Capturar, reemplazar (`Shift+Enter`), insertar (`Alt+Enter`) o capturar un fotograma que dura N cuadros (`Ctrl+2…9`).
 
-**Visualización**
-- Papel cebolla de 1 a 6 fotogramas con opacidad ajustable.
-- Alternar entre vivo y último fotograma (`2`), **parpadeo automático** (`B`) y **modo diferencia** (`D`) para ver con precisión qué se movió.
-- **Croma (pantalla verde) en tiempo real** con supresión de derrame y una imagen de fondo.
-- **Focus peaking**, **lupa 1:1** a resolución nativa e **histograma** RGB con aviso de recorte.
-- Cuadrículas (tercios, cuartos, fina, cruz), máscaras de encuadre (2.39, 1.85, 16:9, 4:3, 1:1, 4:5, 9:16) y zonas seguras.
-- **Capa de guías** dibujada a mano para trayectorias y arcos. Las guías no salen en la captura.
+**Asistente de rodaje** (nunca cambia ni borra fotos)
+- Tras cada foto avisa si la **cámara se movió** (cuántos píxeles y hacia dónde), si **cambió la luz**, si se **disparó dos veces**, si **entró algo por el borde** o si se **perdió el foco**.
+- En vivo, antes de disparar, avisa si la luz o la cámara ya no coinciden con el último fotograma.
+- **Revisar toda la toma** lista los fotogramas sospechosos y los muestra en modo diferencia.
 
-**Color y luz**
-- **Estabilización de luz automática (deflicker)**: corrige los cambios de brillo entre fotos causados por luz natural o por la cámara. Respeta los fundidos intencionados. En una prueba con fotos que saltaban un 25 % de brillo, quedaron dentro del 3 %.
-- Brillo, contraste y saturación. Se aplican al revisar, reproducir y exportar sin tocar las fotos originales.
+**Visor y animación**
+- Visor por GPU (WebGL2), con alternativa 2D.
+- Papel cebolla anterior y siguiente, con tinte por dirección y modos «destacar lo claro / lo oscuro»; modo diferencia; parpadeo vivo/último.
+- Croma en tiempo real, focus peaking, lupa 1:1, histograma, cuadrículas, máscaras de encuadre, zonas seguras y capa de guías.
+- Referencia de vídeo o imagen (rotoscopia) sincronizada.
+- **Segunda pantalla**: el visor a pantalla completa en otro monitor.
+- **Estabilización de luz (deflicker)** al reproducir y exportar, sin tocar las fotos.
 
-**Referencia (rotoscopia)**
-- Carga un video de actuación, una animática o una imagen de storyboard. Se superpone sincronizada con la línea de tiempo, con opacidad y desfase ajustables, y nunca sale en el resultado.
+**Timeline y X-Sheet**
+- Timeline con duración por fotograma, notas, selección múltiple, arrastrar, duplicar y deshacer ilimitado; reproducción completa, en bucle, ping-pong, corta y a ½ o ¼ de velocidad con el sonido sincronizado. 6–30 fps, 18 y personalizado.
+- **X-Sheet** (modo Estudio): una fila por exposición con acción, diálogo, fonema, cámara, luz y notas. Lo planificado va unido al tiempo aunque cambien los fotogramas. Exportar/importar CSV e imprimir.
 
-**Línea de tiempo (X-sheet)**
-- **Regla de tiempo**: arrástrala para recorrer la animación (con sonido). La rueda del ratón desplaza la línea y `Ctrl` + rueda hace zoom.
-- **Notas por fotograma** (diálogo, fonemas A/E/O/M, indicaciones), visibles en la celda y sobre la imagen. Atajo `N`.
-- Duración de cada fotograma (en unos, en doses…). El ancho de cada celda es proporcional a su duración.
-- Selección múltiple, reordenar arrastrando, duplicar, eliminar y deshacer/rehacer ilimitado.
-- Reproducción completa, por rango seleccionado, en bucle, ping-pong y **reproducción corta** (últimos N fotogramas y de vuelta a vivo).
-- **Audio para lip-sync**: forma de onda alineada con los fotogramas, desfase configurable y *scrub*, que reproduce el sonido de cada fotograma al recorrerlo.
+**Audio y lip sync**
+- Varias pistas (diálogo, música, efectos) con volumen, silencio y exposición de inicio; ondas en el timeline; *scrub* fotograma a fotograma.
+- **Lip sync**: personajes con su juego de bocas; la columna «Fonema» del X-Sheet dice qué boca va en cada exposición y el visor la muestra antes de cada foto. **Borrador automático** desde el diálogo (aproximado, por volumen).
 
-**Herramientas**
-- **Calculadora de espaciado**: cuántos milímetros mover el objeto en cada fotograma con curvas lineales, ease-in, ease-out y ease-in-out.
+**Luz DMX y motion control** (modo Estudio, desactivados por defecto)
+- Antes de cada foto MESORA pone las luces y los ejes en su sitio para esa exposición, espera a que paren y dispara.
+- Luces: looks y programa por exposición con fundidos; salida **Art-Net**, **ENTTEC DMX USB Pro** o simulador.
+- Movimiento: ejes con claves y curvas de aceleración; **firmware Arduino propio (MESORA-Moco)** y simulador. Detalles, conexiones y qué se ha probado: [docs/luz-y-movimiento.md](docs/luz-y-movimiento.md).
 
-**Proyectos y exportación**
-- **App de escritorio:** cada producción es una carpeta en `Documentos/MESORA`, organizada en **Producción › Escena › Toma**. Las fotos originales se guardan como archivos normales (`scenes/sc010/takes/tk01/capture/X1/sc010_tk01_X1_c000001.jpg`) que puedes abrir con cualquier programa. MESORA nunca las sobrescribe ni las borra:
-  - Borrar un fotograma solo lo quita del timeline. El aviso que aparece ofrece **Deshacer** y **Ver papelera**; la papelera también está en **Herramientas › Proyecto**.
-  - **Historial** guarda versiones anteriores del timeline.
-  - **Copiar en orden** copia los originales en el orden final, numerados 0001, 0002… (lo que en cine se llama *conform*).
-  - En **Proyectos** cada proyecto muestra sus escenas y tomas. «Abrir» abre una toma y el menú **⋯** crea una toma nueva, duplica la escena, exporta o elimina. Al pulsar «Escena · Toma» en la barra superior se llega directo a esa lista.
-  - Si la app se cierra de golpe justo después de disparar, al volver a abrir la toma la foto aparece al final con una nota.
-  - Los proyectos de versiones anteriores se copian solos a carpetas la primera vez que abres la nueva versión; la copia antigua no se toca.
-- **Navegador y Android:** varios proyectos guardados automáticamente en el navegador (IndexedDB).
-- Un indicador muestra «Guardado» en todo momento.
-- Exportar **video MP4 (H.264) o WebM** con audio a la resolución original, 4K, 1080p, 720p o 480p.
-- Exportar una **secuencia de imágenes en ZIP** con las capturas originales, opcionalmente repitiendo cada fotograma según sus exposiciones.
-- Exportar e importar el proyecto completo como `.mesora` (copia de seguridad o traspaso a otro equipo).
-- Importar imágenes y audio arrastrándolos a la ventana.
-- Aplicación instalable (PWA) que funciona sin conexión.
+**Revisión, mando y automatización**
+- **Paquete de revisión**: un HTML que cualquiera abre en su navegador; escribe notas por fotograma y te devuelve un archivo que MESORA coloca en cada fotograma.
+- **Móvil como mando** por wifi (con código QR): disparar, reproducir, moverse por los fotogramas y ver el visor.
+- **API local** para otros programas: [docs/api-local.md](docs/api-local.md).
+
+**Proyectos y seguridad**
+- App de escritorio: cada producción es una carpeta en `Documentos/MESORA` (*Producción › Escena › Toma*), con las fotos originales como archivos normales que MESORA **nunca sobrescribe ni borra**. Papelera, historial de versiones del timeline, *conform* (copia en orden) y recuperación tras un cierre inesperado.
+- **Copia de seguridad automática** cada 10 minutos a un disco externo o una carpeta en la nube; solo añade y actualiza.
+- Web y Android: proyectos guardados en el navegador; copia completa en un archivo `.mesora`.
+
+**Exportación**
+- Escritorio (FFmpeg, fuera de tiempo real): **MP4 H.264**, **MOV ProRes 422 HQ**, **AVI Motion JPEG**, secuencias **PNG, TIFF o JPEG**, a la resolución original, 4K, 2K, 1080p, 720p o personalizada, con la mezcla de sonido.
+- **Sonido (WAV)**: la mezcla de las pistas del tramo exportado.
+- Web: MP4/WebM en tiempo real y secuencia ZIP. En todas: fotograma actual (PNG), paquete de revisión y `.mesora`.
 
 ## Atajos principales
 
 | Tecla | Acción |
 | --- | --- |
-| `Enter` | Capturar |
-| `0` / `Espacio` | Reproducir / detener |
+| `Enter` · `Shift+Enter` · `Alt+Enter` | Capturar · reemplazar · insertar |
+| `Ctrl+2…9` | Capturar un fotograma que dura 2–9 cuadros |
+| `0` / `Espacio` | Reproducir / parar |
 | `1` / `←`, `3` / `→` | Fotograma anterior / siguiente |
-| `2` / `Tab` | Alternar vivo ↔ último |
-| `5` / `Fin` | Ir a vista en vivo |
-| `6` | Reproducción corta |
-| `8` / `L`, `P` | Bucle, ping-pong |
+| `2` / `Tab`, `5` / `Fin` | Alternar vivo ↔ último, ir al vivo |
+| `6`, `8` / `L`, `P` | Reproducción corta, bucle, ping-pong |
 | `O`, `D`, `B` | Papel cebolla, diferencia, parpadeo |
 | `G`, `F`, `Z` | Cuadrícula, focus peaking, lupa |
-| `+` / `−` | Duración del fotograma |
-| `N` | Nota del fotograma |
-| `Shift+F` | Pantalla completa |
-| `Supr`, `Ctrl+D` | Eliminar, duplicar |
-| `Ctrl+Z`, `Ctrl+Shift+Z` | Deshacer, rehacer |
-| `?` | Todos los atajos |
+| `+` / `−`, `N` | Duración del fotograma, nota |
+| `Supr`, `Ctrl+D`, `Ctrl+Z` | Eliminar, duplicar, deshacer |
+| `?` | Ayuda y todos los atajos |
 
-Las teclas numéricas siguen la disposición del teclado numérico que usan los animadores profesionales.
+Todos se pueden cambiar en *Ayuda*. Las teclas numéricas siguen la disposición del teclado numérico de los animadores profesionales.
 
 ## MESORA frente a Dragonframe
 
+Comparación con la **documentación pública** de Dragonframe; el programa no se ha inspeccionado directamente ([docs/investigacion/](docs/investigacion/)). Detalle función por función y estado de verificación: [matriz de equivalencia](docs/investigacion/03-matriz-equivalencia.md).
+
 | | MESORA Studio | Dragonframe |
 | --- | --- | --- |
-| Precio | Gratis | Licencia de pago |
-| Instalación | Ninguna, abre en el navegador (Windows, Mac, Linux, Chromebook, tableta) | Programa de escritorio |
-| Deflicker automático | Integrado | Se suele hacer después con herramientas externas |
-| Papel cebolla, diferencia, parpadeo | Sí | Sí |
-| X-sheet con duración y notas | Sí | Sí |
-| Audio y lip-sync | Forma de onda, scrub y notas de fonemas | Más completo (pistas de diálogo, tablas de fonemas) |
-| Referencia/rotoscopia | Sí | Sí |
-| Control de réflex/sin espejo por USB | No (sí como webcam) | Sí |
-| Control de movimiento e iluminación DMX | No | Sí |
+| Precio y licencia | Gratis, código abierto (GPL-3.0) | Licencia de pago |
+| Plataformas | Windows, Mac, Android y navegador (Linux desde el código) | Windows, Mac y Linux |
+| Réflex y sin espejo | Cualquier marca mediante la carpeta de su programa oficial; RAW | Control directo de Canon, Nikon, Sony… (live view y ajustes desde el programa) |
+| Video assist + alta calidad | Sí | Sí |
+| Papel cebolla, diferencia, parpadeo, croma, guías | Sí | Sí |
+| X-Sheet, lip sync con bocas | Sí (borrador automático por volumen) | Sí (más completo: lectura de pistas, PSD de bocas) |
+| Varias pistas de audio | Sí | Sí |
+| Luces DMX (Art-Net, ENTTEC) | Sí, por exposición con fundidos | Sí, con curvas Bézier y más opciones |
+| Motion control | Firmware Arduino propio y simulador | DFMoco y controladores comerciales; ejes virtuales, go-motion |
+| Exportación ProRes / secuencias / WAV | Sí | Sí |
+| Asistente que avisa tras cada foto (golpe, luz, duplicado, mano, foco) | **Sí** | No aparece en la documentación ni en el historial de versiones revisados |
+| Deflicker integrado | **Sí** | No aparece en su página de funciones ni en su historial de versiones |
+| Mando | El propio móvil por wifi, gratis | Teclado y mando propios, que se venden aparte |
 
-## Limitaciones honestas
+MESORA añade además copias de seguridad automáticas, una API local, paquetes de revisión con notas por fotograma, un modo aprendizaje y un modo sencillo.
 
-Frente a Dragonframe, MESORA todavía no hace dos cosas. En la versión web el navegador no da acceso a ellas; en la app de escritorio serían posibles, pero aún no están programadas:
-- **Control de cámaras réflex o sin espejo por USB** (disparo y ajustes de Canon, Nikon o Sony). Sí puedes usarlas como cámara web, mediante la función "webcam" del fabricante o una capturadora HDMI.
-- **Control de movimiento** (motores DMX/Arduino) e iluminación DMX.
+**Lo que todavía no tiene MESORA** (con honestidad):
+- **Control directo por USB** de cámaras Canon, Nikon o Sony (cambiar ISO, apertura o enfocar desde MESORA, live view de la réflex). Necesita los SDK de cada fabricante, que hay que solicitarles. Mientras tanto, la carpeta vigilada funciona con cualquier cámara y su programa oficial.
+- Exposiciones múltiples por fotograma (X1…X12), multicámara, curvas Bézier en luces, ejes virtuales y go-motion.
+- Compatibilidad con controladores DFMoco (MESORA usa su propio protocolo abierto).
+- El hardware (cámaras réflex reales, luces DMX, motores) no se ha probado en este desarrollo: se ha verificado con simuladores y archivos de prueba. Ver [informe de pruebas](docs/pruebas/informe-fases-1-10.md).
 
-Los proyectos se guardan dentro de la app (o del navegador, en la versión web). Exporta tu proyecto en `.mesora` de vez en cuando como copia de seguridad o para pasarlo a otro equipo: el mismo archivo se abre en Windows, Mac, Android y la web.
+## Compilar y probar
+
+```bash
+npm install
+npm test                   # pruebas unitarias (también compila y prueba el firmware si hay compilador de C++)
+npm run build:web          # prepara www/
+npm run test:viewer        # pruebas de píxel del visor (app de escritorio)
+npm run test:e2e           # prueba de principio a fin de la app de escritorio
+npm run desktop            # abrir la app de escritorio en modo desarrollo
+npm run dist:win           # Windows: instalador + portable en dist/
+npm run dist:mac           # Mac: .dmg (en un Mac)
+npm run android:apk        # Android (necesita Android SDK y Java 21)
+```
+
+En Linux sin pantalla, antepón `xvfb-run -a` a `test:viewer` y `test:e2e`.
+El workflow `.github/workflows/build-apps.yml` prueba en Windows, Mac y Linux y compila las tres apps; publica una release con cada etiqueta `vX.Y.Z` y actualiza la pre-release «última versión» con cada cambio en la rama principal.
+
+**Firmas:** el APK de Android se firma con una clave pública incluida en el repositorio (para instalar encima de la versión anterior; para Google Play usa la tuya con `MESORA_KEYSTORE`…). Windows y macOS muestran un aviso la primera vez porque las apps no tienen firma de pago (Authenticode / Apple Developer ID); con un certificado, electron-builder firma solo (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`).
 
 ## Estructura
 
 ```
-index.html            interfaz
-css/styles.css        estilos
-js/app.js             orquestación, estado y atajos
-js/camera.js          cámara, controles y captura con promediado
-js/viewer.js          composición: cebolla, diferencia, croma, peaking, lupa, guías
-js/timeline.js        línea de tiempo / X-sheet
-js/framestore.js      almacenamiento de fotogramas y caché de imágenes
-js/audio.js           audio, forma de onda y scrub
-js/exporter.js        exportación de video y secuencias
-js/projectio.js       archivos .mesora
-js/zip.js             lector/escritor ZIP sin dependencias
-js/timing.js          exposiciones, timecode y espaciado (funciones puras)
-js/grading.js         deflicker y corrección de color (funciones puras)
-js/platform.js        detección de plataforma y guardado nativo en Android
-sw.js                 modo sin conexión (versión web)
-electron/             app de escritorio (Windows, Mac, Linux)
-android/              proyecto Android (Capacitor)
-scripts/              preparación de www/ e iconos
+index.html, css/          interfaz
+js/app.js                 orquestación de la app
+js/library.js, migrate.js biblioteca (disco en escritorio, IndexedDB en web)
+js/camera.js              cámara, controles y promediado
+js/viewer-gl.js, viewer.js visor GPU (WebGL2) y 2D
+js/assistant.js           asistente de rodaje
+js/audio.js, lipsync.js   audio multipista y lip sync
+js/xsheet.js, timeline.js X-Sheet y timeline
+js/dmx.js, moco.js, rig.js luces DMX y motion control
+js/review.js, learn.js    paquete de revisión, modo aprendizaje
+js/i18n.js, i18n-en.js    idiomas
+electron/                 app de escritorio: biblioteca en disco, FFmpeg, carpeta vigilada,
+                          mando del móvil, copias de seguridad, Art-Net
+firmware/mesora-moco/     firmware Arduino de motion control y su banco de pruebas
+android/                  app de Android (Capacitor)
+tests/                    pruebas unitarias y E2E
+docs/                     manual, investigación, auditoría, pruebas y referencias
 ```
-
-## Compilar las apps
-
-```bash
-npm install
-npm test                 # tests
-npm run desktop          # abre la app de escritorio en modo desarrollo
-npm run dist:win         # Windows: instalador + portable en dist/
-npm run dist:mac         # Mac: .dmg en dist/ (se compila en un Mac)
-npm run android:apk      # Android: APK firmado en android/app/build/outputs/apk/release/
-```
-
-Para Android hace falta el Android SDK (`ANDROID_HOME`) y Java 21. El workflow `.github/workflows/build-apps.yml` compila las tres plataformas en GitHub:
-- al subir una etiqueta `v1.2.0` publica una release con esa versión;
-- en cualquier otro push actualiza la pre-release **«última versión»**.
-
-La versión de las apps se toma de `package.json`.
-
-**Firma de Android:** el APK se firma con `android/app/mesora-sideload.keystore`. Esa clave es pública, está en el repositorio y permite que cada versión se instale encima de la anterior. Para publicar en Google Play, usa tu propia clave con las variables `MESORA_KEYSTORE`, `MESORA_KEYSTORE_PASSWORD`, `MESORA_KEY_ALIAS` y `MESORA_KEY_PASSWORD`.
-
-**Firma de Windows y Mac:** sin certificado de pago (Authenticode / Apple Developer ID), Windows y macOS muestran el aviso de seguridad descrito arriba la primera vez. Con un certificado, electron-builder firma automáticamente (`CSC_LINK`, `CSC_KEY_PASSWORD`, y en Mac también `APPLE_ID` para notarizar).
 
 ## Código abierto
 
-MESORA Studio es **software libre y gratuito** bajo la licencia [GPL-3.0-or-later](LICENSE). Puedes usarlo para cualquier fin, también comercial, estudiar su código, modificarlo y compartirlo. Si distribuyes una versión modificada, debe seguir siendo libre con la misma licencia.
+MESORA Studio es **software libre y gratuito** bajo la licencia [GPL-3.0-or-later](LICENSE): puedes usarlo para cualquier fin, también comercial, estudiar y modificar su código y compartirlo; las versiones modificadas que distribuyas deben seguir siendo libres con la misma licencia. Componentes de terceros: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## In English
+
+MESORA Studio is a free, open-source (GPL-3.0) stop-motion studio for Windows, macOS,
+Android and the web (Linux from source). Highlights: webcam and HDMI capture; DSLR and mirrorless
+cameras of any brand through their official tethering software (watched folder, RAW
+kept untouched, video assist); a shooting assistant that warns about camera bumps,
+light changes, double shots, hands in frame and lost focus; GPU viewer with onion
+skin, difference, chroma key and focus aids; X-Sheet, multitrack audio and lip sync
+with mouth sets; DMX lighting (Art-Net, ENTTEC) and motion control with an
+open Arduino firmware and simulators; FFmpeg export to MP4, ProRes, AVI and image
+sequences; phone remote and local API; review packages with per-frame notes;
+automatic backups; a learning mode; and a Simple/Studio interface. Switch the
+interface to English in *Ayuda › Idioma* (Help › Language).

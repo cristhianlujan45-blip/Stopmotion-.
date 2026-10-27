@@ -12,6 +12,52 @@ Dragonframe sigue sin inspeccionarse en directo.
 
 ---
 
+## Estado a 27-10-2026 (tras implementar la auditoría)
+
+Pruebas y evidencias: [informe de pruebas](../pruebas/informe-fases-1-10.md) y
+[matriz de equivalencia actualizada](../investigacion/03-matriz-equivalencia.md).
+Leyenda: ✅ hecho y probado · 🟡 en parte · ⏸ no hecho (motivo indicado).
+
+| Propuesta | Estado |
+|---|---|
+| **Quitar** 1 · Vídeo en tiempo real en escritorio | ✅ Escritorio exporta con FFmpeg fuera de tiempo real; la web conserva el grabado en tiempo real |
+| **Quitar** 2–3 · `.mesora` como vía principal y botón duplicado | ✅ Queda como «Exportar copia»; un solo lugar para importar |
+| **Quitar** 4 · Paridad total web/Android | ⏸ Decisión del usuario (sección 8). Lo propio del escritorio (FFmpeg, carpeta vigilada, copias, mando, Art-Net) solo aparece en escritorio |
+| **Cambiar** 1 · Espacios de trabajo + modo sencillo/estudio | ✅ |
+| **Cambiar** 2 · fps en la barra, 18 y personalizado, velocidad de revisión aparte | ✅ |
+| **Cambiar** 3 · Visor WebGL2 | ✅ (pruebas de píxel GPU y 2D) |
+| **Cambiar** 4 · Dividir `js/app.js` | 🟡 Todo lo nuevo va en módulos propios (asistente, audio, lip sync, X-Sheet, atajos, luces, movimiento, revisión, aprendizaje, idiomas…), pero `app.js` sigue siendo grande (≈ 3.600 líneas) |
+| **Cambiar** 5 · Timeline: números, miniaturas, virtualización | 🟡 Miniaturas bajo demanda; el X-Sheet está virtualizado, el timeline todavía no |
+| **Mejorar** 1 · Reproducción en alta calidad | 🟡 Vistas previas de 1080p y caché por memoria; falta medir 24 fps a 2K con GPU real |
+| **Mejorar** 2 · Instalador firmado y actualizaciones | 🟡 Aviso de versión nueva con enlace de descarga. Firma: ⏸ es de pago y el usuario no la quiere |
+| **Mejorar** 3 · CSP | ✅ |
+| **Mejorar** 4 · Registro de errores | ✅ |
+| **Mejorar** 5 · Pruebas en Windows y macOS, píxel, rendimiento | ✅ E2E y píxel en los tres sistemas; ⏸ prueba de rendimiento en CI |
+| **Mejorar** 6 · Licencia | ✅ GPL-3.0-or-later |
+| **Mejorar** 7 · Inglés | ✅ Interfaz completa en inglés (diccionario aparte, `js/i18n-en.js`) |
+| **Añadir** 6A.1 · Control de réflex por SDK | ⏸ Requiere los SDK de Canon, Sony o Nikon (registro del usuario). Mientras, cualquier marca vía carpeta vigilada |
+| **Añadir** 6A.2–3 · Video assist + HQ, carpeta vigilada, RAW | ✅ (sin cámara real: ver informe) |
+| **Añadir** 6A.4 · Exportación ProRes, PNG/TIFF/JPEG, MP4, WAV | ✅ |
+| **Añadir** 6A.5 · X-Sheet | ✅ |
+| **Añadir** 6A.6 · Lip sync | ✅ Personajes, bocas, fonemas, borrador; 🟡 sin PSD ni lectura por palabras |
+| **Añadir** 6A.7 · Atajos configurables y mando | ✅ Atajos editables; el móvil como mando |
+| **Añadir** 6A.8 · Segundo monitor | ✅ |
+| **Añadir** 6A.9 · DMX y motion control | ✅ Con simuladores y firmware propio; ⏸ sin probar con aparatos (norma del proyecto) |
+| **Superar** 6B.1 · Asistente inteligente | ✅ Golpe, luz, duplicado, borde, foco; 🟡 detecta desde ≈ 6 px a 1080p, no 2 px |
+| **Superar** 6B.2 · Deflicker en vivo | ✅ Vigilancia de luz en el vivo + compensación al reproducir y exportar |
+| **Superar** 6B.3 · Móvil como compañero | ✅ Mando con vista previa; ⏸ segunda cámara y monitor del director |
+| **Superar** 6B.4 · Revisión compartida | ✅ Paquete HTML con notas por fotograma que vuelven al timeline (archivo, no enlace en la nube) |
+| **Superar** 6B.5 · Modo aprendizaje | ✅ Tutorial guiado; ⏸ guías de los 12 principios y ejercicios |
+| **Superar** 6B.6 · Copias automáticas | ✅ |
+| **Superar** 6B.7 · Formatos abiertos y API | ✅ Proyecto en JSON legible, API local, protocolo de motion control abierto |
+| **Superar** 6B.8 · Precio | ✅ Gratis y libre |
+
+Decisiones de la sección 8: licencia **resuelta** (GPL-3.0-or-later, código
+abierto y gratuito); firma de código **descartada por el usuario** (es de pago);
+cámara principal y SDK, y estrategia de plataformas, **pendientes**.
+
+---
+
 ## 1. Veredicto honesto
 
 **Hoy MESORA no es mejor que Dragonframe para una producción profesional.** Le faltan las piezas que un estudio considera imprescindibles:
