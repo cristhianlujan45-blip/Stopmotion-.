@@ -7,7 +7,7 @@ import { formatTime } from './timing.js';
 export const XS_COLUMNS = [
   { key: 'action', label: 'Acción', hint: 'Qué hace el personaje' },
   { key: 'dialog', label: 'Diálogo', hint: 'Texto o sílaba que se oye' },
-  { key: 'phoneme', label: 'Fonema', hint: 'Boca: A, E, O, M, F…' },
+  { key: 'phoneme', label: 'Fonema', hint: 'Boca: A, E, O, U, MBP, FV, L, CS o - (reposo)' },
   { key: 'camera', label: 'Cámara', hint: 'Movimiento o ajuste de cámara' },
   { key: 'light', label: 'Luz', hint: 'Cambio de iluminación' },
 ];
@@ -171,7 +171,7 @@ export class XSheetView {
       const frameCell = r.first ? r.frameIndex + 1 : r.frameIndex >= 0 ? '│' : i === next ? '●' : '';
       html += `<div class="${cls}" data-exposure="${r.exposure}" data-frame="${r.frameIndex}" style="top:${i * ROW_H}px">
         <span class="mono">${r.exposure}</span><span class="mono muted">${formatTime(r.exposure - 1, fps).slice(3)}</span><span class="mono fr">${frameCell}</span>${
-        XS_COLUMNS.map((c) => `<input data-key="${c.key}" value="${esc(p[c.key])}" spellcheck="false" aria-label="${c.label}, exposición ${r.exposure}">`).join('')}${
+        XS_COLUMNS.map((c) => `<input data-key="${c.key}"${c.key === 'phoneme' ? ' list="phonemeList"' : ''} value="${esc(p[c.key])}" spellcheck="false" aria-label="${c.label}, exposición ${r.exposure}">`).join('')}${
         r.first ? `<input data-key="note" value="${esc(r.note)}" maxlength="80" aria-label="Nota del fotograma ${r.frameIndex + 1}">` : '<span></span>'}</div>`;
     }
     this.rowsEl.innerHTML = html;

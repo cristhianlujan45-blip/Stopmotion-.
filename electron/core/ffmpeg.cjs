@@ -53,17 +53,6 @@ function buildArgs(spec) {
   return args;
 }
 
-/** Arguments to export only the sound of a range as WAV. */
-function buildAudioArgs({ file, startSeconds = 0, durationSeconds, out }) {
-  const args = ['-hide_banner', '-loglevel', 'error', '-y'];
-  if (startSeconds > 0) args.push('-ss', startSeconds.toFixed(4));
-  args.push('-i', file);
-  if (startSeconds < 0) args.push('-af', `adelay=${Math.round(-startSeconds * 1000)}:all=1`);
-  if (durationSeconds > 0) args.push('-t', durationSeconds.toFixed(4));
-  args.push('-c:a', 'pcm_s16le', out);
-  return args;
-}
-
 /** One running export: write frames, then finish. */
 class ExportJob {
   constructor(ffmpegPath, args, { cleanup } = {}) {
@@ -128,4 +117,4 @@ function bundledFFmpeg() {
   }
 }
 
-module.exports = { FORMATS, CRF, buildArgs, buildAudioArgs, ExportJob, runOnce, bundledFFmpeg };
+module.exports = { FORMATS, CRF, buildArgs, ExportJob, runOnce, bundledFFmpeg };

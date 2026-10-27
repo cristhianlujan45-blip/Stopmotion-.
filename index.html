@@ -87,6 +87,7 @@
         <span id="hudTime" class="hud-item mono"></span>
         <span id="hudNote" class="hud-note" hidden></span>
         <span id="hudAssist" class="hud-warn" hidden></span>
+        <span id="hudMouth" class="hud-mouth" hidden><img alt="" hidden><b></b></span>
         <span id="hudFlags" class="hud-flags"></span>
       </div>
       <div class="drop-hint" id="dropHint" hidden>Suelta para importar</div>
@@ -408,18 +409,43 @@
         </details>
       </div>
       <div class="tabpanel" data-panel="audio">
-        <details class="group" data-sec="audio-y-lip-sync" open>
-          <summary>Audio y lip-sync</summary>
-          <p class="muted small" id="audioInfo">Sin pista de audio. Al moverte por los fotogramas escucharás el fragmento correspondiente.</p>
+        <details class="group" data-sec="pistas-de-audio" open>
+          <summary>Pistas de audio</summary>
+          <p class="muted small" id="audioInfo"></p>
+          <ul class="track-list" id="trackList"></ul>
           <div class="row">
-            <button id="btnAudio" class="btn grow">Cargar audio…</button>
-            <button id="btnAudioClear" class="btn ghost">Quitar</button>
+            <button id="btnAudio" class="btn grow" title="Diálogo, música o efectos (WAV, MP3, M4A, OGG…). Puedes elegir varios a la vez.">Añadir audio…</button>
           </div>
-          <label class="field"><span>Empieza en el fotograma (exposición)</span>
-            <input type="number" id="audioOffset" min="0" step="1" value="0">
-          </label>
-          <input type="file" id="fileAudio" accept="audio/*" hidden>
+          <input type="file" id="fileAudio" accept="audio/*" multiple hidden>
         </details>
+
+        <details class="group studio-only" data-sec="lip-sync" open>
+          <summary>Lip sync (bocas)</summary>
+          <p class="muted small">Escribe en el X-Sheet, columna «Fonema», la boca de cada exposición (o genera un borrador desde el diálogo). Antes de cada foto el visor te dice qué boca poner.</p>
+          <label class="field"><span>Personaje</span><select id="lipCharacter"></select></label>
+          <div class="row">
+            <button class="btn grow" id="btnLipAddChar">Nuevo personaje</button>
+            <button class="btn ghost" id="btnLipRename">Renombrar</button>
+          </div>
+          <div class="mouth-grid" id="mouthGrid" hidden></div>
+          <input type="file" id="fileMouth" accept="image/*" hidden>
+          <label class="check"><input type="checkbox" data-setting="lipsync.hud"> Mostrar la boca en el visor</label>
+          <label class="field"><span>Borrador desde la pista</span><select id="lipTrack"></select></label>
+          <div class="row">
+            <button class="btn grow" id="btnLipDraft" title="Rellena los fonemas vacíos según el volumen de la voz: callado = reposo, antes de hablar = labios cerrados, más fuerte = boca más abierta. No entiende palabras: corrígelo a mano.">Generar borrador de fonemas</button>
+          </div>
+        </details>
+        <datalist id="phonemeList">
+          <option value="A">A · I (muy abierta)</option>
+          <option value="E">E</option>
+          <option value="O">O</option>
+          <option value="U">U · W</option>
+          <option value="MBP">M · B · P (labios cerrados)</option>
+          <option value="FV">F · V</option>
+          <option value="L">L · D · T · N</option>
+          <option value="CS">C · S · R…</option>
+          <option value="-">Reposo</option>
+        </datalist>
       </div>
 
       <div class="tabpanel xsheet-panel" data-panel="xsheet">
@@ -616,10 +642,6 @@
             <button class="btn" id="btnDxConform" title="Copia las fotos originales de la cámara, sin tocarlas, numeradas en el orden del timeline">Copiar fotos originales en orden</button>
           </div>
         </section>
-        <section class="group only-desktop">
-          <h3>Sonido</h3>
-          <button class="btn" id="btnDxWav">Exportar sonido (WAV)</button>
-        </section>
         <section class="group only-web">
           <h3>Video</h3>
           <div class="grid2">
@@ -663,6 +685,7 @@
           <h3>Otros</h3>
           <div class="row wrap">
             <button class="btn" id="btnExportFrame">Fotograma actual (PNG)</button>
+            <button class="btn" id="btnExportWav" title="La mezcla de todas las pistas que suenan, del mismo tramo que el video">Sonido (WAV)</button>
             <button class="btn" id="btnExportProject" title="Un solo archivo con todo el proyecto, para pasarlo a otro equipo o a la versión web o Android">Copia del proyecto (.mesora)</button>
           </div>
         </section>

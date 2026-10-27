@@ -1,3 +1,4 @@
+import { drawWaveforms } from './audio.js';
 import { formatTime } from './timing.js';
 
 const LIVE_MIN_W = 76;
@@ -239,11 +240,12 @@ export class Timeline {
     else if (right > wrap.scrollLeft + wrap.clientWidth - pad) wrap.scrollLeft = right - wrap.clientWidth + pad;
   }
 
-  drawWave(audio, fps, offset, totalExposures) {
-    if (!audio?.ready) { this.wave.hidden = true; return; }
+  /** Waveforms of the sound tracks, layered; `endSeconds` is where the last one ends. */
+  drawWave(layers, fps, totalExposures, endSeconds) {
+    if (!layers.some((l) => l.peaks)) { this.wave.hidden = true; return; }
     this.wave.hidden = false;
-    const exposuresShown = Math.max(totalExposures, offset + Math.ceil(audio.duration * fps));
+    const exposuresShown = Math.max(totalExposures, Math.ceil(endSeconds * fps));
     const cssWidth = Math.max(this.root.scrollWidth, exposuresShown * this.zoom + Math.max(this.zoom, LIVE_MIN_W));
-    audio.drawWaveform(this.wave, this.zoom, fps, offset, cssWidth);
+    drawWaveforms(this.wave, layers, this.zoom, fps, cssWidth);
   }
 }

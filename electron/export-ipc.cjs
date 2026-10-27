@@ -2,8 +2,9 @@
 // them here; the files land in the project's "exports" folder unless the user
 // picks another place.
 const path = require('node:path');
+const os = require('node:os');
 const fsp = require('node:fs/promises');
-const { FORMATS, buildArgs, buildAudioArgs, ExportJob, runOnce, bundledFFmpeg } = require('./core/ffmpeg.cjs');
+const { FORMATS, buildArgs, ExportJob, bundledFFmpeg } = require('./core/ffmpeg.cjs');
 const { safeName, writeAtomic } = require('./core/fsutil.cjs');
 
 const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
@@ -47,16 +48,18 @@ function serveExport({ ipcMain, dialog, shell, library, getWindow, fromApp, log 
       await fsp.mkdir(target, { recursive: false });
       out = path.join(target, `${path.basename(target)}_%05d.${f.ext}`);
     }
+    const id = nextId++;
+    // The sound comes already mixed (all tracks, from the first exported exposure) as WAV.
     let audio = null;
-    if (spec.audio?.blobId) {
-      const file = await library.blobPath(key, spec.audio.blobId);
-      if (file) audio = { file, startSeconds: spec.audio.startSeconds || 0 };
+    if (spec.audioWav && f.kind === 'video') {
+      audio = { file: path.join(os.tmpdir(), `mesora-mezcla-${process.pid}-${id}.wav`), startSeconds: 0 };
+      await fsp.writeFile(audio.file, Buffer.from(spec.audioWav));
     }
     const args = buildArgs({ format: spec.format, width: spec.width, height: spec.height, fps: spec.fps, quality: spec.quality, out, audio });
-    const cleanup = () => fsp.rm(target, { recursive: true, force: true });
+    const removeMix = () => (audio ? fsp.rm(audio.file, { force: true }) : Promise.resolve());
+    const cleanup = () => Promise.all([fsp.rm(target, { recursive: true, force: true }), removeMix()]);
     const job = new ExportJob(ffmpeg, args, { cleanup });
-    const id = nextId++;
-    jobs.set(id, { job, target });
+    jobs.set(id, { job, target, removeMix });
     log('info', 'Exportación iniciada', spec.format, target);
     return { id, target };
   });
@@ -80,6 +83,7 @@ function serveExport({ ipcMain, dialog, shell, library, getWindow, fromApp, log 
       await entry.job.cleanup?.().catch(() => {});
       throw err;
     }
+    await entry.removeMix();
     outputs.add(entry.target);
     return { target: entry.target };
   });
@@ -89,20 +93,6 @@ function serveExport({ ipcMain, dialog, shell, library, getWindow, fromApp, log 
     const entry = jobs.get(id);
     jobs.delete(id);
     await entry?.job.cancel();
-  });
-
-  /** Sound of a range as WAV. */
-  ipcMain.handle('export:wav', async (event, key, spec) => {
-    guard(event);
-    if (!ffmpeg) throw new Error('FFmpeg no está disponible en esta instalación');
-    const file = await library.blobPath(key, spec.blobId);
-    if (!file) throw new Error('No hay audio en esta escena');
-    const { dir, prefix } = await library.exportTarget(key);
-    const target = await chooseTarget({ ask: spec.ask, isFolder: false, defaultPath: path.join(dir, `${safeName(spec.name, 'mesora')}_${prefix}_${stamp()}.wav`), ext: 'wav' });
-    if (!target) return null;
-    await runOnce(ffmpeg, buildAudioArgs({ file, startSeconds: spec.startSeconds, durationSeconds: spec.durationSeconds, out: target }));
-    outputs.add(target);
-    return { target };
   });
 
   /** Any other file made by the editor (ZIP, PNG, CSV, .mesora…), saved next to the other exports. */

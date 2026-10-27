@@ -16,6 +16,8 @@ const ASSETS = [
   './js/grading.js',
   './js/history.js',
   './js/library.js',
+  './js/lipsync.js',
+  './js/media.js',
   './js/migrate.js',
   './js/monitor.js',
   './js/platform.js',

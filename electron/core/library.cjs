@@ -210,10 +210,10 @@ class Library {
     return this.getProject(key);
   }
 
-  async _writeScene(prodDir, sceneId, { name, fps, settings = null, audio = null }) {
+  async _writeScene(prodDir, sceneId, { name, fps, settings = null, audio = null, tracks = null }) {
     const now = Date.now();
     await writeJSON(path.join(this._sceneDir(prodDir, sceneId), 'scene.json'), {
-      format: 'mesora-scene', version: VERSION, id: sceneId, name, fps, settings, audio, createdAt: now, updatedAt: now,
+      format: 'mesora-scene', version: VERSION, id: sceneId, name, fps, settings, audio, tracks, createdAt: now, updatedAt: now,
     });
     return sceneId;
   }
@@ -269,7 +269,7 @@ class Library {
     const srcScene = await readJSON(path.join(this._sceneDir(prodDir, sceneId), 'scene.json'));
     const newId = await this._nextId(path.join(prodDir, 'scenes'), 'sc', 3, 10);
     await this._writeScene(prodDir, newId, {
-      name: name || `${srcScene.name} (copia)`, fps: srcScene.fps, settings: srcScene.settings, audio: srcScene.audio,
+      name: name || `${srcScene.name} (copia)`, fps: srcScene.fps, settings: srcScene.settings, audio: srcScene.audio, tracks: srcScene.tracks ?? null,
     });
     const takesDir = path.join(this._sceneDir(prodDir, sceneId), 'takes');
     let firstKey = null;
@@ -345,6 +345,7 @@ class Library {
           guides: edl.guides || [],
           settings: scene.settings || null,
           audio: scene.audio || null,
+          tracks: scene.tracks || null,
           createdAt: edl.createdAt,
           updatedAt: Math.max(edl.updatedAt || 0, scene.updatedAt || 0, prod.updatedAt || 0),
           production: { id: st.prodId, name: prod.name },
@@ -388,7 +389,9 @@ class Library {
 
       const scenePath = path.join(this._sceneDir(st.prodDir, st.sceneId), 'scene.json');
       const scene = await readJSON(scenePath);
-      const nextScene = { ...scene, fps: project.fps, settings: project.settings ?? null, audio: project.audio ?? null };
+      const nextScene = {
+        ...scene, fps: project.fps, settings: project.settings ?? null, audio: project.audio ?? null, tracks: project.tracks ?? null,
+      };
       if (JSON.stringify(nextScene) !== JSON.stringify(scene)) await writeJSON(scenePath, { ...nextScene, updatedAt: now });
 
       const edlPath = path.join(st.dir, 'edl.json');

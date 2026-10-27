@@ -15,7 +15,6 @@ contextBridge.exposeInMainWorld('mesoraDesktop', {
     frame: (id, bytes, times) => ipcRenderer.invoke('export:frame', id, bytes, times),
     finish: (id) => ipcRenderer.invoke('export:finish', id),
     cancel: (id) => ipcRenderer.invoke('export:cancel', id),
-    wav: (key, spec) => ipcRenderer.invoke('export:wav', key, spec),
     saveFile: (key, spec) => ipcRenderer.invoke('export:saveFile', key, spec),
     reveal: (target) => ipcRenderer.invoke('export:reveal', target),
   },

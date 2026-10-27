@@ -7,7 +7,8 @@ import { pendingBrowserProjects, migrateProject } from './migrate.js';
 import { Camera } from './camera.js';
 import { FrameStore, isRawFile } from './framestore.js';
 import { History } from './history.js';
-import { AudioTrack } from './audio.js';
+import { AudioMix, TRACK_COLORS, encodeWav, exposureLevels } from './audio.js';
+import { MOUTHS, mouthFor, mouthLabel, draftMouths } from './lipsync.js';
 import { createViewer } from './viewer-gl.js';
 import { ACTIONS, Keymap, comboOf, comboLabel } from './shortcuts.js';
 import { XSheetView, xsheetToCSV, xsheetFromCSV, xsheetTableHTML } from './xsheet.js';
@@ -56,6 +57,7 @@ function defaultSettings() {
     shutterSound: true,
     tether: { folder: '', assist: true },
     assistant: { enabled: true, live: true, sensitivity: 'normal' },
+    lipsync: { characters: [], active: '', hud: true },
     xsheet: { animator: '', length: 48, plan: {} },
     playSpeed: 1,
     display: 'preview',
@@ -73,7 +75,7 @@ function newProject(name, fps = 12) {
   const now = Date.now();
   return {
     id: uid(), name, fps, width: 1920, height: 1080,
-    frames: [], audio: null, guides: [], settings: defaultSettings(),
+    frames: [], audio: null, tracks: [], guides: [], settings: defaultSettings(),
     createdAt: now, updatedAt: now,
   };
 }
@@ -118,7 +120,7 @@ const els = {
   fps: $('#fpsSelect'),
   projectInfo: $('#projectInfo'),
   audioInfo: $('#audioInfo'),
-  audioOffset: $('#audioOffset'),
+  hudMouth: $('#hudMouth'),
   blink: $('#btnBlink'),
   draw: $('#btnDraw'),
   loupeChk: $('#chkLoupe'),
@@ -159,7 +161,7 @@ const player = {
 const camera = new Camera($('#video'));
 const store = new FrameStore({ onLoad: () => { state.dirty = true; } });
 const history = new History();
-const audio = new AudioTrack();
+const audio = new AudioMix();
 const viewer = createViewer({
   area: els.area, stage: els.stage, main: $('#mainCanvas'), overlay: $('#overlayCanvas'),
   guides: els.guides, loupe: els.loupe,
@@ -216,6 +218,7 @@ async function openProject(p, report = null) {
   history.clear();
   p.settings = withDefaults(p.settings, defaultSettings());
   p.guides ??= [];
+  p.tracks = normalizeTracks(p);
   p.frames = (p.frames || []).map((f) => ({ key: f.key || uid(), id: f.id, hold: f.hold || 1, ...(f.note ? { note: f.note } : {}) }));
   state.gains = new Map();
   state.project = p;
@@ -230,6 +233,7 @@ async function openProject(p, report = null) {
   if (!p.frames.length && camera.active) { p.width = camera.width; p.height = camera.height; }
   viewer.setSize(p.width, p.height);
   applySettingsToUI();
+  renderLipSync();
   renderTimeline();
   await restoreAudio();
   await restoreChromaBg();
@@ -436,7 +440,7 @@ function playAudioFrom(pos) {
   if (!audio.ready || player.pingpong) return;
   const p = P();
   const speed = playSpeed();
-  audio.play((player.startExposure + pos - (p.audio?.offset || 0)) / p.fps, undefined, speed);
+  audio.play((player.startExposure + pos) / p.fps, undefined, speed);
 }
 
 function tickPlayer(now) {
@@ -580,8 +584,7 @@ function scrubAudio(index) {
   if (!audio.ready) return;
   const p = P();
   const fr = frames();
-  const t = (exposureStart(fr, index) - (p.audio?.offset || 0)) / p.fps;
-  audio.scrub(t, Math.max(fr[index].hold / p.fps, 0.08));
+  audio.scrub(exposureStart(fr, index) / p.fps, Math.max(fr[index].hold / p.fps, 0.08));
 }
 
 // ---------------------------------------------------------------- editing
@@ -629,7 +632,8 @@ const scheduleGains = debounce(async () => {
 
 function drawWave() {
   const p = P();
-  timeline.drawWave(audio, p.fps, p.audio?.offset || 0, totalExposures(p.frames));
+  const layers = p.tracks.map((t, i) => ({ peaks: audio.peaksOf(t.blobId), offset: t.offset || 0, color: trackColor(i), muted: t.muted }));
+  timeline.drawWave(layers, p.fps, totalExposures(p.frames), audio.duration);
 }
 
 function deleteSelected() {
@@ -1294,6 +1298,9 @@ function updateHud(exposure) {
     els.hudFrame.textContent = `Fotograma ${state.playhead + 1} / ${fr.length}`;
     els.hudTime.textContent = `${formatTime(exposureStart(fr, state.playhead), fps)} / ${formatTime(total, fps)}`;
   }
+  // Exposure being shot (live) or shown, 1-based like the X-Sheet.
+  const at = player.playing ? (exposure ?? player.exposure) : isLive() ? total : exposureStart(fr, state.playhead);
+  updateHudMouth(at + 1).catch(() => {});
 }
 
 function updateHudFlags() {
@@ -1402,6 +1409,7 @@ function onSettingChanged(path) {
   if (path === 'grade.deflicker') { state.gains = new Map(); scheduleGains(); }
   if (path === 'display') applyDisplayKind();
   if (path.startsWith('xsheet.')) renderXSheet();
+  if (path.startsWith('lipsync.')) updateHud();
   updateHudFlags();
   updateTransport();
 }
@@ -1521,57 +1529,281 @@ els.guides.addEventListener('pointercancel', endStroke);
 
 // ---------------------------------------------------------------- audio
 
+const trackColor = (i) => TRACK_COLORS[i % TRACK_COLORS.length];
+
+/** Projects from before multitrack sound had a single `audio`; it becomes the first track. */
+function normalizeTracks(p) {
+  if (Array.isArray(p.tracks)) return p.tracks;
+  const a = p.audio;
+  p.audio = null;
+  return a?.blobId ? [{ id: uid(), blobId: a.blobId, name: (a.name || 'Audio').replace(/\.[^.]+$/, ''), offset: a.offset || 0, volume: 1, muted: false }] : [];
+}
+
 async function restoreAudio() {
-  audio.clear();
-  const a = P().audio;
-  if (a?.blobId) {
+  const p = P();
+  audio.setTracks(p.tracks, p.fps);
+  for (const t of p.tracks) {
+    if (audio.has(t.blobId)) continue;
     try {
-      const rec = await library.getBlob(P().id, a.blobId);
-      if (rec) await audio.load(rec.blob);
+      const rec = await library.getBlob(p.id, t.blobId);
+      if (P() !== p) return;
+      if (rec) await audio.decode(t.blobId, rec.blob);
+      else toast(`No se encuentra el archivo de la pista «${t.name}»`, 'error', 6000);
     } catch (err) {
-      toast(`No se pudo cargar el audio: ${err.message}`, 'error');
+      toast(`No se pudo cargar la pista «${t.name}»: ${err.message}`, 'error');
     }
   }
-  updateAudioUI();
+  if (P() !== p) return;
+  renderTracks();
   drawWave();
 }
 
-async function loadAudioFile(file) {
+/** Adds a sound file (dialogue, music, effects) as a new track starting at exposure 1. */
+async function addAudioTrack(file) {
   const project = P();
+  const blobId = uid();
   try {
-    await audio.load(file);
+    await audio.decode(blobId, file);
   } catch {
-    toast('Formato de audio no soportado', 'error');
+    toast(`Formato de audio no soportado: ${file.name}`, 'error');
     return;
   }
-  const id = uid();
-  await library.putBlob(project.id, { id, name: file.name, blob: file });
-  if (project.audio?.blobId) library.deleteBlob(P().id, project.audio.blobId).catch(() => {});
-  project.audio = { blobId: id, name: file.name, offset: 0 };
+  await library.putBlob(project.id, { id: blobId, name: file.name, blob: file });
+  if (P() !== project) return;
+  project.tracks.push({ id: uid(), blobId, name: file.name.replace(/\.[^.]+$/, ''), offset: 0, volume: 1, muted: false });
+  audio.setTracks(project.tracks, project.fps);
   saveSoon();
-  updateAudioUI();
+  renderTracks();
   drawWave();
-  toast(`Audio cargado: ${file.name}`, 'ok');
+  toast(`Pista añadida: ${file.name}`, 'ok');
 }
 
-function clearAudio() {
+function removeTrack(id) {
   const p = P();
-  if (p.audio?.blobId) library.deleteBlob(P().id, p.audio.blobId).catch(() => {});
-  p.audio = null;
-  audio.clear();
+  const t = p.tracks.find((x) => x.id === id);
+  if (!t || !confirm(`¿Quitar la pista «${t.name}»?`)) return;
+  p.tracks.splice(p.tracks.indexOf(t), 1);
+  if (!p.tracks.some((x) => x.blobId === t.blobId)) library.deleteBlob(p.id, t.blobId).catch(() => {});
+  audio.setTracks(p.tracks, p.fps);
   saveSoon();
-  updateAudioUI();
+  renderTracks();
   drawWave();
 }
 
-function updateAudioUI() {
-  const a = P().audio;
-  if (a && audio.ready) {
-    els.audioInfo.textContent = `${a.name} · ${audio.duration.toFixed(2)} s (${Math.ceil(audio.duration * P().fps)} exposiciones a ${P().fps} fps)`;
-  } else {
-    els.audioInfo.textContent = 'Sin pista de audio. Al moverte por los fotogramas escucharás el fragmento correspondiente.';
+/** A track setting changed: save, redraw and, while playing, hear it at once. */
+function trackChanged() {
+  saveSoon();
+  drawWave();
+  updateAudioInfo();
+  if (player.playing && !player.pingpong) playAudioFrom(player.exposure - player.startExposure);
+}
+
+function updateAudioInfo() {
+  const p = P();
+  const n = p.tracks.length;
+  els.audioInfo.textContent = n
+    ? `${n} ${n === 1 ? 'pista' : 'pistas'} · el sonido termina en ${audio.duration.toFixed(2)} s (exposición ${Math.ceil(audio.duration * p.fps)} a ${p.fps} fps)`
+    : 'Sin audio. Añade diálogo, música o efectos: al moverte por los fotogramas escucharás el fragmento correspondiente.';
+}
+
+function renderTracks() {
+  const p = P();
+  const ul = $('#trackList');
+  ul.innerHTML = '';
+  p.tracks.forEach((t, i) => {
+    const li = document.createElement('li');
+    li.className = `track${t.muted ? ' muted' : ''}`;
+    li.dataset.id = t.id;
+    li.innerHTML = `
+      <div class="track-head">
+        <span class="swatch" style="background:${trackColor(i)}"></span>
+        <input class="track-name" data-act="name" maxlength="60" aria-label="Nombre de la pista">
+        <button class="btn small toggle${t.muted ? ' active' : ''}" data-act="mute" title="Silenciar esta pista" aria-pressed="${!!t.muted}">Silenciar</button>
+        <button class="btn small ghost" data-act="remove" title="Quitar la pista">Quitar</button>
+      </div>
+      <div class="track-row">
+        <label title="Volumen de la pista">Vol. <input type="range" min="0" max="1.5" step="0.05" data-act="volume"></label>
+        <label title="Exposición en la que empieza a sonar (0 = desde el principio)">Desde exp. <input type="number" min="0" step="1" data-act="offset"></label>
+      </div>
+      <div class="muted small track-meta"></div>`;
+    li.querySelector('[data-act="name"]').value = t.name;
+    li.querySelector('[data-act="volume"]').value = t.volume ?? 1;
+    li.querySelector('[data-act="offset"]').value = t.offset || 0;
+    const d = audio.durationOf(t.blobId);
+    li.querySelector('.track-meta').textContent = d ? `${d.toFixed(2)} s · ${Math.ceil(d * p.fps)} exposiciones` : 'No se pudo cargar';
+    ul.append(li);
+  });
+  updateAudioInfo();
+  updateLipTrackSelect();
+}
+
+function onTrackInput(e) {
+  const li = e.target.closest('.track');
+  const t = li && P().tracks.find((x) => x.id === li.dataset.id);
+  if (!t) return;
+  const act = e.target.dataset.act;
+  if (act === 'name') { t.name = e.target.value.trim() || 'Pista'; saveSoon(); updateLipTrackSelect(); }
+  if (act === 'volume') { t.volume = Number(e.target.value); trackChanged(); }
+  if (act === 'offset' && e.type === 'change') {
+    t.offset = Math.max(0, Math.floor(Number(e.target.value) || 0));
+    e.target.value = t.offset;
+    trackChanged();
   }
-  els.audioOffset.value = a?.offset || 0;
+}
+
+function onTrackClick(e) {
+  const btn = e.target.closest('button[data-act]');
+  const li = e.target.closest('.track');
+  const t = li && P().tracks.find((x) => x.id === li.dataset.id);
+  if (!btn || !t) return;
+  if (btn.dataset.act === 'remove') removeTrack(t.id);
+  if (btn.dataset.act === 'mute') {
+    t.muted = !t.muted;
+    li.classList.toggle('muted', t.muted);
+    btn.classList.toggle('active', t.muted);
+    btn.setAttribute('aria-pressed', String(t.muted));
+    trackChanged();
+  }
+}
+
+// ---------------------------------------------------------------- lip sync
+
+const lip = () => S().lipsync;
+const activeCharacter = () => lip().characters.find((c) => c.id === lip().active) || lip().characters[0] || null;
+const mouthUrls = new Map(); // blobId → object URL
+
+async function mouthUrl(blobId) {
+  if (mouthUrls.has(blobId)) return mouthUrls.get(blobId);
+  const rec = await library.getBlob(P().id, blobId).catch(() => null);
+  const url = rec ? URL.createObjectURL(rec.blob) : '';
+  mouthUrls.set(blobId, url);
+  return url;
+}
+
+/** The mouth to put on for an exposure (1-based), from the X-Sheet «Fonema» column. */
+function mouthAt(exposure) {
+  const text = S().xsheet.plan?.[exposure]?.phoneme;
+  return mouthFor(text);
+}
+
+function renderLipSync() {
+  const l = lip();
+  const sel = $('#lipCharacter');
+  sel.innerHTML = '';
+  for (const c of l.characters) sel.add(new Option(c.name, c.id));
+  const c = activeCharacter();
+  sel.value = c?.id || '';
+  sel.disabled = !c;
+  $('#btnLipRename').disabled = !c;
+  const grid = $('#mouthGrid');
+  grid.innerHTML = '';
+  grid.hidden = !c;
+  if (!c) return;
+  for (const m of MOUTHS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mouth';
+    b.dataset.mouth = m.id;
+    b.title = `${m.label}: ${m.hint}. Pulsa para elegir la imagen de esta boca.`;
+    b.innerHTML = '<span class="img"></span><span class="lbl"></span>';
+    b.querySelector('.lbl').textContent = m.label;
+    const id = c.mouths?.[m.id];
+    if (id) mouthUrl(id).then((url) => { if (url) b.querySelector('.img').style.backgroundImage = `url("${url}")`; });
+    else b.querySelector('.img').textContent = '+';
+    grid.append(b);
+  }
+}
+
+function updateLipTrackSelect() {
+  const sel = $('#lipTrack');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const t of P().tracks) sel.add(new Option(t.name, t.id));
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  $('#btnLipDraft').disabled = !P().tracks.length;
+}
+
+async function addCharacter() {
+  const name = await askText('Nombre del personaje', `Personaje ${lip().characters.length + 1}`);
+  if (!name?.trim()) return;
+  const c = { id: uid(), name: name.trim(), mouths: {} };
+  lip().characters.push(c);
+  lip().active = c.id;
+  saveSoon();
+  renderLipSync();
+  updateHud();
+}
+
+async function renameCharacter() {
+  const c = activeCharacter();
+  if (!c) return;
+  const name = await askText('Nuevo nombre del personaje', c.name);
+  if (!name?.trim()) return;
+  c.name = name.trim();
+  saveSoon();
+  renderLipSync();
+}
+
+let mouthTarget = null;
+
+async function setMouthImage(file) {
+  const c = activeCharacter();
+  if (!c || !mouthTarget || !file.type.startsWith('image/')) return;
+  const project = P();
+  const blobId = uid();
+  await library.putBlob(project.id, { id: blobId, name: file.name, blob: file });
+  if (P() !== project) return;
+  c.mouths ??= {};
+  c.mouths[mouthTarget] = blobId;
+  saveSoon();
+  renderLipSync();
+  updateHud();
+}
+
+/**
+ * Fills the empty «Fonema» cells of the X-Sheet with a first draft from the
+ * loudness of a track. Cells already written are never changed.
+ */
+async function draftLipSync() {
+  const p = P();
+  const t = p.tracks.find((x) => x.id === $('#lipTrack').value) || p.tracks[0];
+  if (!t || !audio.has(t.blobId)) { toast('Añade primero la pista de diálogo', 'warn'); return; }
+  const { buffer } = audio.decoded.get(t.blobId);
+  const mono = new Float32Array(buffer.length);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = 0; i < d.length; i++) mono[i] += d[i] / buffer.numberOfChannels;
+  }
+  const mouths = draftMouths(exposureLevels(mono, buffer.sampleRate, p.fps));
+  const plan = S().xsheet.plan;
+  let filled = 0;
+  mouths.forEach((m, i) => {
+    const exposure = (t.offset || 0) + i + 1;
+    if (plan[exposure]?.phoneme) return;
+    plan[exposure] = { ...(plan[exposure] || {}), phoneme: m === 'rest' ? '-' : m };
+    filled++;
+  });
+  saveSoon();
+  renderXSheet();
+  updateHud();
+  toast(filled
+    ? `Borrador listo: ${filled} exposiciones con boca en el X-Sheet (columna Fonema). Es aproximado, por volumen: corrígelo a mano.`
+    : 'Todas las exposiciones de esa pista ya tenían fonema; no se cambió nada.', 'ok', 8000);
+}
+
+/** Mouth shown in the viewer for the exposure being shot or reviewed. */
+async function updateHudMouth(exposure) {
+  const el = els.hudMouth;
+  const m = lip().hud ? mouthAt(exposure) : null;
+  el.hidden = !m;
+  if (!m) return;
+  el.querySelector('b').textContent = `Boca: ${mouthLabel(m)}`;
+  const blobId = activeCharacter()?.mouths?.[m];
+  const img = el.querySelector('img');
+  const url = blobId ? await mouthUrl(blobId) : '';
+  img.hidden = !url;
+  if (url && img.getAttribute('src') !== url) img.src = url;
 }
 
 // ---------------------------------------------------------------- chroma background
@@ -1768,7 +2000,7 @@ async function importFiles(fileList) {
   const audios = files.filter((f) => f.type.startsWith('audio/'));
   const projects = files.filter((f) => /\.(mesora|zip)$/i.test(f.name));
   for (const f of projects) await importProject(f);
-  if (audios[0]) await loadAudioFile(audios[0]);
+  for (const a of audios) await addAudioTrack(a);
   if (images.length) await importImages(images);
   if (!images.length && !audios.length && !projects.length) toast('No se reconoció ningún archivo compatible', 'warn');
 }
@@ -2211,7 +2443,7 @@ async function exportVideo() {
       filters: $('#exGrade').checked ? await exportFilters(a, b) : null,
       bitrate: Number($('#exBitrate').value),
       audio: $('#exAudio').checked && audio.ready ? audio : null,
-      audioOffset: p.audio?.offset || 0,
+      audioOffset: 0,
       startExposure: exposureStart(fr, a),
       signal: controller.signal,
       onProgress: (v) => showProgress(`Grabando video… ${Math.round(v * 100)}%`, v),
@@ -2255,16 +2487,18 @@ async function exportWithFFmpeg(kind) {
   const [a, b] = exportRange('#dxRange');
   const startExposure = exposureStart(fr, a);
   const filters = (video ? $('#dxGrade') : $('#dxGradeImg')).checked ? await exportFilters(a, b) : null;
-  const audioSpec = video && $('#dxAudio').checked && p.audio?.blobId
-    ? { blobId: p.audio.blobId, startSeconds: (startExposure - (p.audio.offset || 0)) / p.fps }
-    : null;
   await saveNow();
+  let audioWav = null;
+  if (video && $('#dxAudio').checked && audio.ready) {
+    const mix = await audio.mixdown(startExposure / p.fps, totalExposures(fr.slice(a, b)) / p.fps);
+    audioWav = encodeWav([mix.getChannelData(0), mix.getChannelData(1)], mix.sampleRate).buffer;
+  }
   let job;
   try {
     job = await exportApi.start(p.id, {
       format: video ? $('#dxFormat').value : $('#dxImgFormat').value,
       width: size.w, height: size.h, fps: p.fps, quality: $('#dxQuality').value,
-      name: p.name, ask: $('#dxAsk').checked, audio: audioSpec,
+      name: p.name, ask: $('#dxAsk').checked, audioWav,
     });
   } catch (err) {
     toast(`Error al exportar: ${err.message}`, 'error', 6000);
@@ -2299,19 +2533,17 @@ async function exportWithFFmpeg(kind) {
   }
 }
 
-/** Sound of the exported range as WAV. */
+/** Mix of every audible track over the exported range, as a WAV file. */
 async function exportWav() {
   const p = P();
-  if (!p.audio?.blobId) { toast('Esta escena no tiene audio', 'warn'); return; }
+  if (!audio.ready) { toast('Esta escena no tiene sonido (o todas sus pistas están silenciadas)', 'warn'); return; }
   const fr = frames();
-  const [a, b] = exportRange('#dxRange');
-  const offset = p.audio.offset || 0;
-  const r = await exportApi.wav(p.id, {
-    blobId: p.audio.blobId, name: p.name, ask: $('#dxAsk').checked,
-    startSeconds: ((fr.length ? exposureStart(fr, a) : 0) - offset) / p.fps,
-    durationSeconds: fr.length ? totalExposures(fr.slice(a, b)) / p.fps : 0,
-  });
-  if (r) toast('Sonido exportado', 'ok', 9000, [{ label: 'Mostrar', onClick: () => exportApi.reveal(r.target).catch((err) => toast(err.message, 'error')) }]);
+  const [a, b] = exportRange(exportApi && p.storage === 'disk' ? '#dxRange' : undefined);
+  const start = fr.length ? exposureStart(fr, a) / p.fps : 0;
+  const length = fr.length ? totalExposures(fr.slice(a, b)) / p.fps : audio.duration;
+  const mix = await audio.mixdown(start, length);
+  const wav = encodeWav([mix.getChannelData(0), mix.getChannelData(1)], mix.sampleRate);
+  await deliver(new Blob([wav], { type: 'audio/wav' }), `${safeFileName(p.name)}.wav`, 'Sonido exportado');
 }
 
 async function exportZip() {
@@ -2600,6 +2832,7 @@ const xsheetView = new XSheetView({
     if (value.trim()) row[key] = value; else delete row[key];
     if (Object.keys(row).length) plan[exposure] = row; else delete plan[exposure];
     saveSoon();
+    if (key === 'phoneme') updateHud();
   },
   onNote: (i, text) => {
     const f = frames()[i];
@@ -2761,7 +2994,9 @@ function bindUI() {
     updateReferenceUI();
     updateHud();
     updateProjectInfo();
-    updateAudioUI();
+    audio.setTracks(P().tracks, P().fps);
+    renderTracks();
+    drawWave();
   });
   els.projectName.addEventListener('change', () => {
     P().name = els.projectName.value.trim() || 'Sin título';
@@ -2771,14 +3006,27 @@ function bindUI() {
   els.projectName.addEventListener('keydown', (e) => { if (e.key === 'Enter') els.projectName.blur(); });
 
   $('#btnAudio').addEventListener('click', () => $('#fileAudio').click());
-  $('#fileAudio').addEventListener('change', (e) => { if (e.target.files[0]) loadAudioFile(e.target.files[0]); e.target.value = ''; });
-  $('#btnAudioClear').addEventListener('click', clearAudio);
-  els.audioOffset.addEventListener('change', () => {
-    if (!P().audio) { els.audioOffset.value = 0; return; }
-    P().audio.offset = Math.max(0, Math.floor(Number(els.audioOffset.value) || 0));
-    saveSoon();
-    drawWave();
+  $('#fileAudio').addEventListener('change', async (e) => {
+    for (const f of [...e.target.files]) await addAudioTrack(f);
+    e.target.value = '';
   });
+  $('#trackList').addEventListener('input', onTrackInput);
+  $('#trackList').addEventListener('change', onTrackInput);
+  $('#trackList').addEventListener('click', onTrackClick);
+  $('#lipCharacter').addEventListener('change', (e) => { lip().active = e.target.value; saveSoon(); renderLipSync(); updateHud(); });
+  $('#btnLipAddChar').addEventListener('click', addCharacter);
+  $('#btnLipRename').addEventListener('click', renameCharacter);
+  $('#mouthGrid').addEventListener('click', (e) => {
+    const b = e.target.closest('.mouth');
+    if (!b) return;
+    mouthTarget = b.dataset.mouth;
+    $('#fileMouth').click();
+  });
+  $('#fileMouth').addEventListener('change', (e) => {
+    if (e.target.files[0]) setMouthImage(e.target.files[0]).catch((err) => toast(err.message, 'error'));
+    e.target.value = '';
+  });
+  $('#btnLipDraft').addEventListener('click', () => draftLipSync().catch((err) => toast(`No se pudo generar el borrador: ${err.message}`, 'error')));
 
   els.timelapse.addEventListener('click', toggleTimelapse);
   for (const id of ['#spDist', '#spFrames', '#spEase']) $(id).addEventListener('input', updateSpacing);
@@ -2802,7 +3050,7 @@ function bindUI() {
   $('#btnDxVideo').addEventListener('click', () => exportWithFFmpeg('video'));
   $('#btnDxImages').addEventListener('click', () => exportWithFFmpeg('images'));
   $('#btnDxConform').addEventListener('click', () => conformTake().catch((err) => toast(err.message, 'error', 6000)));
-  $('#btnDxWav').addEventListener('click', () => exportWav().catch((err) => toast(`Error al exportar: ${err.message}`, 'error', 6000)));
+  $('#btnExportWav').addEventListener('click', () => exportWav().catch((err) => toast(`Error al exportar: ${err.message}`, 'error', 6000)));
   $('#dxFormat').addEventListener('change', () => { $('#dxQualityRow').hidden = $('#dxFormat').value !== 'mp4'; });
   $('#btnExportFrame').addEventListener('click', exportCurrentFrame);
   $('#btnExportProject').addEventListener('click', () => exportProject());

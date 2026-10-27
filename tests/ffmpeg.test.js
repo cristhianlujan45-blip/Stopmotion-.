@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import mod from '../electron/core/ffmpeg.cjs';
 
-const { buildArgs, buildAudioArgs, ExportJob, runOnce, bundledFFmpeg } = mod;
+const { buildArgs, ExportJob, runOnce, bundledFFmpeg } = mod;
 const ffmpeg = bundledFFmpeg();
 
 /** Frame count, codec names and duration of a media file, read with FFmpeg itself. */
@@ -74,7 +74,7 @@ for (const [format, ext] of [['png', 'png'], ['jpg', 'jpg'], ['tiff', 'tif']]) {
   });
 }
 
-test('vídeo con audio desplazado y WAV del mismo tramo', { timeout: 60_000 }, async () => {
+test('vídeo con audio desplazado', { timeout: 60_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mesora-ff-'));
   const wav = join(dir, 'voz.wav');
   await runOnce(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3', '-c:a', 'pcm_s16le', wav]);
@@ -85,11 +85,6 @@ test('vídeo con audio desplazado y WAV del mismo tramo', { timeout: 60_000 }, a
   assert.equal(p.frames, 12);
   assert.ok(Math.abs(p.duration - 1) < 0.15, `dura ${p.duration} s (12 fotogramas a 12 fps = 1 s)`);
 
-  const tramo = join(dir, 'tramo.wav');
-  await runOnce(ffmpeg, buildAudioArgs({ file: wav, startSeconds: 1, durationSeconds: 1.5, out: tramo }));
-  const a = probe(tramo);
-  assert.equal(a.audio, 'pcm_s16le');
-  assert.ok(Math.abs(a.duration - 1.5) < 0.05, `dura ${a.duration} s`);
 });
 
 test('cancelar detiene FFmpeg y limpia', { timeout: 30_000 }, async () => {

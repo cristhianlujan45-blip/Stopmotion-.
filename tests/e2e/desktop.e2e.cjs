@@ -381,6 +381,86 @@ const listTakes = () => {
   await win.locator('#modalListItems li').nth(0).locator('[data-act="show"]').click();
   check(await win.evaluate(() => window.mesora.state.playhead === 2 && window.mesora.state.project.settings.mode === 'difference'), '«Ver» lleva al fotograma 3 en modo diferencia');
   check(listTakes().find((t) => t.prod === 'Asistente E2E').files.length === 5, 'la revisión no cambia ni borra fotos');
+
+  // 14) Audio multipista y lip sync.
+  // Voz: 0,25 s de silencio, 0,5 s de tono fuerte, silencio hasta 1 s. Música: 1 s de tono suave.
+  const wavFile = (fn, seconds, sr = 24000) => {
+    const n = Math.round(seconds * sr);
+    const b = Buffer.alloc(44 + n * 2);
+    b.write('RIFF', 0); b.writeUInt32LE(36 + n * 2, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16);
+    b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * 2, 28);
+    b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(n * 2, 40);
+    for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(fn(i / sr) * 32767), 44 + i * 2);
+    return b;
+  };
+  const voice = wavFile((t) => (t >= 0.25 && t < 0.75 ? 0.8 * Math.sin(2 * Math.PI * 200 * t) : 0), 1);
+  const music = wavFile((t) => 0.3 * Math.sin(2 * Math.PI * 440 * t), 1);
+  await win.click('.tab[data-tab="audio"]');
+  await win.setInputFiles('#fileAudio', [
+    { name: 'voz.wav', mimeType: 'audio/wav', buffer: voice },
+    { name: 'musica.wav', mimeType: 'audio/wav', buffer: music },
+  ]);
+  await win.waitForFunction(() => window.mesora.state.project.tracks.length === 2 && document.querySelectorAll('#trackList .track').length === 2);
+  check(await win.evaluate(() => window.mesora.state.project.tracks.map((t) => t.name).join()) === 'voz,musica', 'dos pistas de audio: voz y música');
+  await win.fill('#trackList .track:nth-child(2) [data-act="offset"]', '4');
+  await win.press('#trackList .track:nth-child(2) [data-act="offset"]', 'Tab');
+  await win.click('#trackList .track:nth-child(1) [data-act="mute"]');
+  const trackState = await win.evaluate(() => window.mesora.state.project.tracks.map((t) => ({ offset: t.offset, muted: t.muted })));
+  check(trackState[0].muted && !trackState[1].muted && trackState[1].offset === 4, 'la voz silenciada y la música empieza en la exposición 4');
+  await win.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })));
+  await win.waitForTimeout(800);
+  const asistTake = listTakes().find((t) => t.prod === 'Asistente E2E');
+  const asistScene = JSON.parse(fs.readFileSync(path.join(asistTake.dir, '..', '..', 'scene.json')));
+  check(asistScene.tracks?.length === 2 && asistScene.tracks[1].offset === 4, 'las pistas se guardan en scene.json');
+
+  // WAV: mezcla de lo que suena (solo la música, desde la exposición 4) en el tramo de los 5 fotogramas.
+  await win.click('#btnExport');
+  await win.click('#btnExportWav');
+  await win.waitForFunction(() => [...document.querySelectorAll('.toast')].some((t) => t.textContent.startsWith('Sonido exportado')), null, { timeout: 15000 });
+  const asistExports = path.join(libDir, 'Asistente E2E', 'exports');
+  const wavName = fs.readdirSync(asistExports).find((n) => n.endsWith('.wav'));
+  const mixWav = fs.readFileSync(path.join(asistExports, wavName));
+  const takeFps = await win.evaluate(() => window.mesora.state.project.fps);
+  const mixSamples = (mixWav.length - 44) / 4;
+  check(Math.abs(mixSamples - Math.round((5 / takeFps) * 48000)) <= 1, `WAV estéreo de ${(5 / takeFps).toFixed(3)} s (5 exposiciones a ${takeFps} fps)`);
+  const sampleAt = (i) => mixWav.readInt16LE(44 + i * 4);
+  const startMusic = Math.round((4 / takeFps) * 48000);
+  let silent = true, loud = 0;
+  for (let i = 0; i < startMusic - 50; i++) if (sampleAt(i) !== 0) { silent = false; break; }
+  for (let i = startMusic + 50; i < mixSamples; i++) loud = Math.max(loud, Math.abs(sampleAt(i)));
+  check(silent && loud > 5000, `la voz silenciada no suena y la música entra en la exposición 4 (pico ${loud})`);
+
+  // Película con sonido (FFmpeg): lleva pista AAC.
+  await win.selectOption('#dxFormat', 'mp4');
+  await win.click('#btnDxVideo');
+  await win.waitForFunction(() => [...document.querySelectorAll('.toast')].some((t) => t.textContent.startsWith('Película exportada')), null, { timeout: 30000 });
+  const filmName = fs.readdirSync(asistExports).find((n) => n.endsWith('.mp4'));
+  const probeOut = require('node:child_process').spawnSync(require('ffmpeg-static'), ['-hide_banner', '-i', path.join(asistExports, filmName)], { encoding: 'utf8' }).stderr;
+  check(/Audio: aac/.test(probeOut), 'la película lleva el sonido mezclado (AAC)');
+  await win.keyboard.press('Escape');
+
+  // Lip sync: personaje con boca «A», borrador de fonemas desde la voz y la boca en el visor.
+  await win.click('[data-uimode="studio"]');
+  await win.click('.tab[data-tab="audio"]');
+  await win.click('#btnLipAddChar');
+  await win.fill('#askInput', 'Ana');
+  await win.press('#askInput', 'Enter');
+  await win.waitForSelector('#mouthGrid .mouth[data-mouth="A"]');
+  const [chooser] = await Promise.all([win.waitForEvent('filechooser'), win.click('#mouthGrid .mouth[data-mouth="A"]')]);
+  await chooser.setFiles({ name: 'boca-a.png', mimeType: 'image/png', buffer: Buffer.from(pngs[0], 'base64') });
+  await win.waitForFunction(() => window.mesora.state.project.settings.lipsync.characters[0]?.mouths?.A);
+  await win.selectOption('#lipTrack', { label: 'voz' });
+  await win.click('#btnLipDraft');
+  const lipPlan = await win.evaluate(() => window.mesora.state.project.settings.xsheet.plan);
+  const ph = (e) => lipPlan[e]?.phoneme;
+  log('fonemas:', Array.from({ length: 12 }, (_, i) => ph(i + 1) || '·').join(' '));
+  check(ph(1) === '-' && ph(3) === 'MBP' && ph(4) === 'A' && ph(10) === '-', 'borrador: reposo, labios cerrados antes de hablar, boca abierta al hablar');
+  await win.evaluate(() => { const st = window.mesora.state; st.playhead = st.project.frames.length; });
+  await win.click('.tab[data-tab="xsheet"]');
+  await win.fill('.xs-row[data-exposure="6"] input[data-key="phoneme"]', 'a');
+  await win.waitForFunction(() => !document.querySelector('#hudMouth').hidden && document.querySelector('#hudMouth b').textContent === 'Boca: A · I');
+  check(await win.evaluate(() => { const img = document.querySelector('#hudMouth img'); return !img.hidden && img.src.startsWith('blob:'); }), 'en vivo, el visor muestra la boca «A» de Ana para la exposición 6');
+  await win.click('[data-uimode="simple"]');
   check(errors.length === 0, `sin errores en la consola${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   await app.close();
   fs.rmSync(work, { recursive: true, force: true });
