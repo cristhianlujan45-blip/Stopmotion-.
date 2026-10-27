@@ -1293,8 +1293,10 @@ async function phoneOffer({ id, sdp }) {
   if (!phone.on) { link.close(); return; }
   link.onChange = () => phoneChanged();
   await camera.attach(link);
+  if (camera.remote !== link) return; // another camera was chosen meanwhile
   await phoneResolution().catch(() => {});
   if ($('#phoneDark').checked) link.request({ type: 'screen', dark: true }).catch(() => {});
+  if (camera.remote !== link) return;
   phone.device = link.info.deviceId || '';
   phone.size = `${camera.width}x${camera.height}`;
   await cameraOpened();
@@ -1446,9 +1448,11 @@ async function startCamera({ quiet = false } = {}) {
     updateCamUI();
     return;
   }
-  if (!camera.track || camera.remote) return; // another camera was chosen meanwhile
+  const track = camera.track;
+  if (!track || camera.remote) return; // another camera was chosen meanwhile
   await refreshDevices();
-  saveCamPrefs({ deviceId: camera.track.getSettings?.().deviceId || '', resolution: els.camRes.value });
+  if (camera.track !== track) return;
+  saveCamPrefs({ deviceId: track.getSettings?.().deviceId || '', resolution: els.camRes.value });
   await cameraOpened();
 }
 

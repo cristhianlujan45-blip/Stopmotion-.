@@ -94,8 +94,16 @@ export class PhoneLink {
     channel.addEventListener('message', (e) => { this.heard = Date.now(); this.receive(e.data); });
     channel.addEventListener('close', () => this.close());
     // A phone that is switched off or loses the wifi does not say goodbye.
+    // If this window itself was busy (the check came late), its messages may
+    // still be waiting to be read: that silence is not the phone's.
     this.heard = Date.now();
-    this.watch = setInterval(() => { if (Date.now() - this.heard > SILENCE_MS) this.close(); }, 1000);
+    let tick = Date.now();
+    this.watch = setInterval(() => {
+      const now = Date.now();
+      if (now - tick > 2000) this.heard = now;
+      tick = now;
+      if (now - this.heard > SILENCE_MS) this.close();
+    }, 1000);
   }
 
   checkReady() {

@@ -76,6 +76,11 @@ procesos. Comprobado:
 - Si el móvil desaparece (se cierra sin despedirse), la app lo nota en unos
   segundos (latido cada segundo, corte a los 5 s sin noticias) y lo espera; el
   móvil reconecta solo.
+- Con la CPU de la app frenada 6 veces (como la CI de Windows): conexión,
+  foto, cambio de resolución, pérdida y reconexión del móvil y vuelta a la
+  webcam, sin errores (dos ejecuciones). Esta prueba encontró y sirvió para
+  corregir una carrera: elegir otra cámara mientras el móvil se conectaba podía
+  dejar la app sin cámara y dar un error.
 
 **Medidas** (contenedor Linux con GPU por software; los dos extremos en el
 mismo ordenador, así que **no incluyen la wifi ni el sensor de un móvil real**):
@@ -83,7 +88,8 @@ mismo ordenador, así que **no incluyen la wifi ni el sensor de un móvil real**
 | Medida | Resultado |
 |---|---|
 | Retardo de la imagen en vivo, del «móvil» a la pantalla de la app | **mediana 39–40 ms**, p95 57–63 ms, mínimo 16–18 ms (90 cuadros por ejecución, tres ejecuciones). Método: el «móvil» pinta su reloj como cuadrados blancos y negros y la app lo lee en cada cuadro que muestra |
-| Espera en el búfer de la app (jitter buffer) | 5–7 ms |
+| El mismo retardo en la CI de GitHub (máquinas virtuales sin GPU) | Linux: mediana 39 ms (p95 63); macOS: 77 ms (p95 117); Windows: 140 ms (p95 219), con la app tan cargada que la medición tardó 30 s en vez de 3 |
+| Espera en el búfer de la app (jitter buffer) | 5–7 ms (32 ms en la CI de Windows) |
 | Decodificación (H.264) | 3–8 ms |
 | Resolución en vivo al empezar | **1920 × 1080 desde el primer medio segundo**. Sin el arranque rápido (3 Mbit/s) era 480 × 270 los primeros 3 s y 960 × 540 a los 8 s |
 | Foto a resolución completa pedida al móvil (1080p, hacerla, codificarla y recibirla) | 50–110 ms tras el arranque (la primera, hasta 0,8 s) |
