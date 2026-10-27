@@ -56,6 +56,7 @@
   function say(text, kind = '') {
     $('status').textContent = text;
     $('status').className = kind;
+    console.info(`[MESORA] ${text}`); // also in the browser's console, to find out why a phone does not connect
   }
 
   // ---- screen: stays on; can go black so it does not light the set
@@ -234,11 +235,19 @@
     return out;
   }
 
+  /** All the addresses, or after `ms` the ones found so far, but never none (a slow network card would leave the offer
+   *  empty and the connection could not start). At most 4 × ms. */
   function gathered(peer, ms) {
-    if (peer.iceGatheringState === 'complete') return Promise.resolve();
-    return new Promise((r) => {
-      peer.addEventListener('icegatheringstatechange', () => { if (peer.iceGatheringState === 'complete') r(); });
-      setTimeout(r, ms); // on a local network the first addresses are enough
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const check = () => {
+        const waited = Date.now() - start;
+        const some = /a=candidate/.test(peer.localDescription?.sdp || '');
+        if (peer.iceGatheringState === 'complete' || (waited >= ms && some) || waited >= ms * 4) { clearInterval(timer); resolve(); }
+      };
+      const timer = setInterval(check, 100);
+      peer.addEventListener('icegatheringstatechange', check);
+      check();
     });
   }
 
@@ -283,7 +292,10 @@
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw Object.assign(new Error(body.error || r.statusText), { status: r.status });
     await pc.setRemoteDescription({ type: 'answer', sdp: startFast(body.sdp) });
+    // Not connected in 15 s (the first try can fail on a busy network): start again now, not when the browser gives up (~30 s).
+    const slow = setTimeout(() => { if (channel?.readyState !== 'open') endConnection(); }, 15000);
     await ended;
+    clearTimeout(slow);
   }
 
   function hangUp() {

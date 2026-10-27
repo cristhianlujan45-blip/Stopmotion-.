@@ -25,11 +25,18 @@ function lowLatency(receiver) {
   try { if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0; } catch { /* not supported */ }
 }
 
+/** All the addresses, or after `ms` the ones found so far, but never none (at most 4 × ms). */
 function gathered(pc, ms) {
-  if (pc.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise((resolve) => {
-    pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') resolve(); });
-    setTimeout(resolve, ms);
+    const start = Date.now();
+    const check = () => {
+      const waited = Date.now() - start;
+      const some = /a=candidate/.test(pc.localDescription?.sdp || '');
+      if (pc.iceGatheringState === 'complete' || (waited >= ms && some) || waited >= ms * 4) { clearInterval(timer); resolve(); }
+    };
+    const timer = setInterval(check, 100);
+    pc.addEventListener('icegatheringstatechange', check);
+    check();
   });
 }
 

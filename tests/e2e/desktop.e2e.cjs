@@ -31,7 +31,8 @@ async function launch() {
   });
   const win = await app.firstWindow();
   const errors = [];
-  win.on('pageerror', (e) => errors.push(String(e)));
+  // With the place where it happened (the first lines of the stack), to find intermittent errors on slow machines.
+  win.on('pageerror', (e) => errors.push(String(e.stack || e).split('\n').slice(0, 4).join(' ← ')));
   win.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   Object.assign(current, { app, win, errors });
   await win.waitForFunction(() => window.mesora?.state?.project, null, { timeout: 20000 });
@@ -545,7 +546,9 @@ const listTakes = () => {
       else await win.waitForTimeout(300);
     }
     check(preview && preview[0] === 0xff && preview[1] === 0xd8, `el móvil recibe la vista previa del visor (${preview?.length} bytes)`);
-    check(await win.textContent('#remoteState') === 'Móvil conectado.', 'la app indica que hay un móvil conectado');
+    // The app updates this once a second from the phone's last request (a slow photo can leave a gap of a few seconds).
+    check(await win.waitForFunction(() => document.querySelector('#remoteState').textContent === 'Móvil conectado.', null, { timeout: 5000 }).then(() => true, () => false),
+      'la app indica que hay un móvil conectado');
     await win.click('#btnRemote');
     await win.waitForSelector('#remoteBox[hidden]', { state: 'attached' });
     check(await fetch(`${api}/api/state`, { headers: rh }).then(() => false, () => true), 'al desactivarlo, el mando deja de responder');
@@ -749,11 +752,26 @@ const listTakes = () => {
     camUrl.hostname = '127.0.0.1'; // the "phone" is on this computer
     check(await httpsStatus(`${camUrl.origin}/api/camera/status`) === 403, 'sin el código del QR no se puede usar');
     const browser = await launchPhone();
+    // If the "phone" does not connect, say why: what the phone page shows, what the app shows and the phone's console.
+    const phoneLog = [];
+    const phoneConnected = async (page, what) => {
+      const t0 = Date.now();
+      try {
+        await win.waitForFunction(() => window.mesora.camera.remote && window.mesora.camera.active, null, { timeout: 45000 });
+      } catch (err) {
+        const status = await page.textContent('#status').catch(() => '?');
+        const app = await win.evaluate(() => ({ estado: document.querySelector('#phoneState').textContent, remote: !!window.mesora.camera.remote, video: window.mesora.camera.video.videoWidth })).catch(() => ({}));
+        console.error(`El móvil no se conectó (${what}). Móvil: «${status}». App: ${JSON.stringify(app)}. Consola del móvil:\n${phoneLog.slice(-25).join('\n')}`);
+        throw err;
+      }
+      log(`${what}: conectado en ${Date.now() - t0} ms`);
+    };
     try {
       const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 412, height: 860 } });
       const phonePage = await ctx.newPage();
+      phonePage.on('console', (m) => phoneLog.push(`${m.type()}: ${m.text()}`));
       await phonePage.goto(camUrl.href);
-      await win.waitForFunction(() => window.mesora.camera.remote && window.mesora.camera.active, null, { timeout: 20000 });
+      await phoneConnected(phonePage, 'móvil');
       await phonePage.waitForFunction(() => document.getElementById('status').className === 'ok', null, { timeout: 10000 });
       log('OK el móvil se conecta: la app lo usa como cámara');
       const size = await win.evaluate(() => [window.mesora.camera.width, window.mesora.camera.height, window.mesora.state.project.width, window.mesora.state.project.height]);
@@ -833,8 +851,9 @@ const listTakes = () => {
         };
       });
       const lagPage = await lagCtx.newPage();
+      lagPage.on('console', (m) => phoneLog.push(`${m.type()}: ${m.text()}`));
       await lagPage.goto(camUrl.href);
-      await win.waitForFunction(() => window.mesora.camera.remote && window.mesora.camera.active, null, { timeout: 20000 });
+      await phoneConnected(lagPage, 'móvil que mide el retardo');
       await win.waitForTimeout(1500);
       const lag = await win.evaluate(() => new Promise((resolve) => {
         const v = window.mesora.camera.video;

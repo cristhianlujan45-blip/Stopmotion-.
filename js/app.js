@@ -1014,7 +1014,7 @@ const liveWatch = { busy: false, last: '', streak: 0 };
 async function liveAssistTick() {
   const el = els.hudAssist;
   const p = P();
-  const fr = frames();
+  const fr = p ? frames() : []; // while the app starts, the project is not open yet
   const on = p?.settings.assistant.live && camera.active && isLive() && !player.playing && fr.length && !document.hidden;
   if (!on) { el.hidden = true; liveWatch.streak = 0; return; }
   if (liveWatch.busy) return;
