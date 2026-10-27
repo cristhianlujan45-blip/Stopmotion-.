@@ -7,6 +7,7 @@ const ASSETS = [
   './manifest.webmanifest',
   './icons/icon.svg',
   './js/app.js',
+  './js/assistant.js',
   './js/audio.js',
   './js/camera.js',
   './js/db.js',

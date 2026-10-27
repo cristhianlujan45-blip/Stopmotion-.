@@ -18,6 +18,15 @@ concurrency:
   group: apps-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Windows removes the trailing dot of folder names, so with a repository name
+  # ending in "." (e.g. "Stopmotion-.") the default workspace folder cannot be
+  # used there. The Windows jobs clone the exact commit into C:\src instead.
+  WINDOWS_CHECKOUT: >-
+    git init -q C:\src;
+    git -C C:\src fetch -q --depth 1 "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "${{ github.sha }}";
+    git -C C:\src checkout -q FETCH_HEAD
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -39,12 +48,21 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.os == 'windows-latest' && 'C:\src' || '.' }}
     steps:
       - uses: actions/checkout@v4
+        if: runner.os != 'Windows'
+      - name: Checkout (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: C:\
+        run: ${{ env.WINDOWS_CHECKOUT }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: ${{ runner.os != 'Windows' && 'npm' || '' }}
       - run: npm ci
       - run: npm test
       - run: npm run build:web
@@ -58,12 +76,17 @@ jobs:
   windows:
     needs: test
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: C:\src
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout (Windows)
+        shell: pwsh
+        working-directory: C:\
+        run: ${{ env.WINDOWS_CHECKOUT }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - run: npm ci
       - run: npm run dist:win
         env:
@@ -71,7 +94,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/*.exe
+          path: C:\src\dist\*.exe
           if-no-files-found: error
 
   mac:

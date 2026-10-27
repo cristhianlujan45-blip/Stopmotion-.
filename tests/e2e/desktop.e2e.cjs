@@ -36,6 +36,9 @@ async function launch() {
   return { app, win, errors };
 }
 
+// The projects window is refreshed from the disk after it opens.
+const projectsReady = (win) => win.waitForSelector('#modalProjects:not([hidden]) #projectList[aria-busy="false"]');
+
 const listTakes = () => {
   const out = [];
   for (const prod of fs.readdirSync(libDir)) {
@@ -288,7 +291,7 @@ const listTakes = () => {
 
   // 8) Proyectos agrupados: un grupo por proyecto y una fila por toma.
   await win.click('#btnProjects');
-  await win.waitForSelector('.prod-group');
+  await projectsReady(win);
   const groups = await win.$$eval('.prod-group .prod-title .name', (els) => els.map((e) => e.textContent));
   check(groups.includes('Corto E2E') && groups.includes('Proyecto antiguo'), `la ventana de proyectos agrupa por proyecto: ${groups.join(', ')}`);
   const currentRow = win.locator('.take-row.current');
@@ -305,10 +308,8 @@ const listTakes = () => {
 
   // 10) La etiqueta de toma abre la lista y permite volver a la toma 1.
   await win.click('#takeLabel');
-  await win.waitForSelector('#modalProjects:not([hidden]) .take-row');
+  await projectsReady(win);
   const group = win.locator('.prod-group.current');
-  // The list is refreshed from the disk after the window opens.
-  await win.waitForFunction(() => document.querySelectorAll('.prod-group.current .take-row').length === 2, null, { timeout: 5000 }).catch(() => {});
   check(await group.locator('.take-row').count() === 2, 'el proyecto muestra sus 2 tomas');
   await group.locator('.take-row', { hasText: 'Toma 1' }).locator('[data-act="open"]').click();
   await win.waitForFunction(() => window.mesora.state.project.take?.name === 'Toma 1' && window.mesora.state.project.frames.length === 3);
@@ -316,6 +317,7 @@ const listTakes = () => {
 
   // 11) Un proyecto de una sola toma ofrece «Eliminar proyecto»: la carpeta va a la papelera del sistema.
   await win.click('#btnProjects');
+  await projectsReady(win);
   const oldGroup = win.locator('.prod-group', { hasText: 'Proyecto antiguo' });
   await oldGroup.locator('summary').click();
   const delBtn = oldGroup.locator('.menu-list .danger');
@@ -335,6 +337,50 @@ const listTakes = () => {
   check(reopened.name === 'Corto E2E' && reopened.n === 3, 'reabrir: se abre la última toma con sus 3 fotogramas');
   const shown = await win.evaluate(async () => !!(await window.mesora.store.load(window.mesora.state.project.frames[0].id)));
   check(shown, 'reabrir: la vista previa del primer fotograma se carga desde el disco');
+
+  // 13) Asistente de rodaje: «Revisar toda la toma» encuentra la cámara movida, el cambio de luz y el doble disparo.
+  await win.click('#btnProjects');
+  await win.fill('#newProjectName', 'Asistente E2E');
+  await win.click('#formNewProject button[type=submit]');
+  await win.waitForFunction(() => window.mesora.state.project.name === 'Asistente E2E');
+  await win.keyboard.press('Escape');
+  const pngs = await win.evaluate(async () => {
+    const W = 640, H = 360;
+    const draw = ({ dx = 0, puppet = 280, gain = 1 }) => {
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const x = c.getContext('2d');
+      let seed = 11;
+      const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+      x.fillStyle = '#5a5a5a'; x.fillRect(0, 0, W, H);
+      for (let i = 0; i < 90; i++) {
+        const v = Math.round(40 + rnd() * 160);
+        x.fillStyle = `rgb(${v},${v},${v})`;
+        x.beginPath(); x.arc(rnd() * W + dx, rnd() * H, 8 + rnd() * 18, 0, Math.PI * 2); x.fill();
+      }
+      x.fillStyle = '#e6e6e6'; x.fillRect(puppet + dx, 140, 60, 100);
+      if (gain !== 1) {
+        const d = x.getImageData(0, 0, W, H);
+        for (let i = 0; i < d.data.length; i += 4) for (let k = 0; k < 3; k++) d.data[i + k] = Math.min(255, d.data[i + k] * gain);
+        x.putImageData(d, 0, 0);
+      }
+      return c.toDataURL('image/png').split(',')[1];
+    };
+    return [draw({}), draw({ puppet: 292 }), draw({ dx: 8, puppet: 304 }), draw({ dx: 8, puppet: 316, gain: 1.15 }), draw({ dx: 8, puppet: 316, gain: 1.15 })];
+  });
+  await win.setInputFiles('#fileImport', pngs.map((b, i) => ({ name: `asist_${i + 1}.png`, mimeType: 'image/png', buffer: Buffer.from(b, 'base64') })));
+  await win.waitForFunction(() => window.mesora.state.project.frames.length === 5, null, { timeout: 20000 });
+  await win.click('.tab[data-tab="camera"]');
+  await win.click('#btnReviewTake');
+  await win.waitForSelector('#modalList:not([hidden])', { timeout: 20000 });
+  const review = await win.$$eval('#modalListItems li', (els) => els.map((li) => `${li.querySelector('.name').textContent}: ${li.querySelector('.sub').textContent}`));
+  log('revisión:', review.join(' | '));
+  check(review.length === 3, 'la revisión marca 3 fotogramas (de 5)');
+  check(/Fotograma 3: La cámara se movió/.test(review[0]), 'fotograma 3: la cámara se movió');
+  check(/Fotograma 4: La luz cambió \+1[45] %/.test(review[1]), 'fotograma 4: la luz cambió ≈ +15 %');
+  check(/Fotograma 5: No se ve ningún cambio/.test(review[2]), 'fotograma 5: doble disparo');
+  await win.locator('#modalListItems li').nth(0).locator('[data-act="show"]').click();
+  check(await win.evaluate(() => window.mesora.state.playhead === 2 && window.mesora.state.project.settings.mode === 'difference'), '«Ver» lleva al fotograma 3 en modo diferencia');
+  check(listTakes().find((t) => t.prod === 'Asistente E2E').files.length === 5, 'la revisión no cambia ni borra fotos');
   check(errors.length === 0, `sin errores en la consola${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   await app.close();
   fs.rmSync(work, { recursive: true, force: true });

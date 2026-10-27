@@ -12,6 +12,7 @@ import { createViewer } from './viewer-gl.js';
 import { ACTIONS, Keymap, comboOf, comboLabel } from './shortcuts.js';
 import { XSheetView, xsheetToCSV, xsheetFromCSV, xsheetTableHTML } from './xsheet.js';
 import { openMonitor } from './monitor.js';
+import { ANALYSIS_W, compareFrames, grayOf } from './assistant.js';
 import { Timeline } from './timeline.js';
 import {
   totalExposures, expandExposures, exposureStart, formatTime, moveItems, computeSpacing,
@@ -54,6 +55,7 @@ function defaultSettings() {
     delay: 0,
     shutterSound: true,
     tether: { folder: '', assist: true },
+    assistant: { enabled: true, live: true, sensitivity: 'normal' },
     xsheet: { animator: '', length: 48, plan: {} },
     playSpeed: 1,
     display: 'preview',
@@ -96,6 +98,7 @@ const els = {
   takeLabel: $('#takeLabel'),
   saveState: $('#saveState'),
   hudNote: $('#hudNote'),
+  hudAssist: $('#hudAssist'),
   frameNote: $('#frameNote'),
   refInfo: $('#refInfo'),
   camDevice: $('#camDevice'),
@@ -770,6 +773,7 @@ async function capture(mode = 'append', { skipDelay = false, hold = 1 } = {}) {
         state.selection = new Set();
       }
     });
+    assistAfterShot(project, entry.key, canvas);
   }).catch((err) => {
     console.error(err);
     const quota = err?.name === 'QuotaExceededError';
@@ -853,12 +857,14 @@ function onCameraPhoto({ key, id, display }) {
       const c = await camera.grab({ flipH: S().flipH, flipV: S().flipV });
       await library.writeAssist(key, id, await canvasToBlob(c, 'image/jpeg', 0.9));
     }
+    const entry = { key: uid(), id, hold: 1 };
     commit((fr) => {
-      fr.push({ key: uid(), id, hold: 1 });
+      fr.push(entry);
       state.playhead = fr.length;
       state.selection = new Set();
     });
     flash();
+    assistAfterShot(project, entry.key);
   }).catch((err) => {
     console.error(err);
     toast(`No se pudo añadir la foto de la cámara: ${err.message}`, 'error', 6000);
@@ -867,6 +873,167 @@ function onCameraPhoto({ key, id, display }) {
     updateSaveState();
   });
   saveChain = job;
+}
+
+// ---------------------------------------------------------------- shooting assistant
+
+// Compares each new photo with the previous frame and warns about accidents.
+// It only reads images; what to do about a warning is always the user's call.
+const analyses = new Map(); // "project:frame" → small grey image, for the last few frames
+
+/** Small grey copy of an image, the size the assistant works at. */
+function analysisOf(source, w, h, { flipH = false, flipV = false } = {}) {
+  const aw = ANALYSIS_W;
+  const ah = Math.max(2, Math.round((aw * h) / w / 2) * 2);
+  const c = makeCanvas(aw, ah);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  if (flipH || flipV) {
+    ctx.translate(flipH ? aw : 0, flipV ? ah : 0);
+    ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+  }
+  ctx.drawImage(source, 0, 0, aw, ah);
+  return grayOf(ctx.getImageData(0, 0, aw, ah).data, aw, ah);
+}
+
+// Frame ids repeat between takes (c000001…), so the cache key includes the take.
+const analysisKey = (id) => `${store.projectId}:${id}`;
+
+function rememberAnalysis(id, img) {
+  const key = analysisKey(id);
+  analyses.delete(key);
+  analyses.set(key, img);
+  while (analyses.size > 6) analyses.delete(analyses.keys().next().value);
+}
+
+async function frameAnalysis(id, remember = true) {
+  const key = analysisKey(id);
+  if (analyses.has(key)) return analyses.get(key);
+  const bmp = await store.decode(id, store.displayKind, { resizeWidth: ANALYSIS_W, resizeQuality: 'medium' });
+  if (!bmp) return null;
+  const img = analysisOf(bmp, bmp.width, bmp.height);
+  bmp.close?.();
+  if (remember && key === analysisKey(id)) rememberAnalysis(id, img);
+  return img;
+}
+
+const assistOptions = (p, checks = null) => ({ sensitivity: p.settings.assistant.sensitivity, widthPx: p.width, checks });
+
+/** Goes to a frame and shows how it differs from the one before it. */
+function showDifferenceAt(key) {
+  const i = frames().findIndex((f) => f.key === key);
+  if (i < 0) return;
+  stopPlayback(false);
+  state.playhead = i;
+  state.selection = new Set([key]);
+  if (S().mode !== 'difference') setMode('difference');
+  renderTimeline();
+  refresh();
+}
+
+async function assistAfterShot(project, key, source = null) {
+  if (!project.settings.assistant.enabled) return;
+  try {
+    const fr = project.frames;
+    const i = fr.findIndex((f) => f.key === key);
+    if (i <= 0 || fr[i - 1].id === fr[i].id) return;
+    const b = source ? analysisOf(source, source.width, source.height) : await frameAnalysis(fr[i].id);
+    if (source) rememberAnalysis(fr[i].id, b);
+    const a = await frameAnalysis(fr[i - 1].id);
+    if (!a || !b || a.h !== b.h || P() !== project) return;
+    const { issues } = compareFrames(a, b, assistOptions(project));
+    if (!issues.length) return;
+    const actions = [{ label: 'Ver diferencia', onClick: () => showDifferenceAt(key) }];
+    if (issues.some((x) => x.type === 'exposure') && !project.settings.grade.deflicker) {
+      actions.push({ label: 'Compensar parpadeo', onClick: () => enableDeflicker(project) });
+    }
+    toast(`Fotograma ${i + 1}: ${issues.map((x) => x.text).join(' ')}`, 'warn', 9000, actions);
+  } catch (err) {
+    console.warn('Asistente de rodaje:', err);
+  }
+}
+
+/** Turns on the deflicker of playback and export (the photos themselves are not changed). */
+function enableDeflicker(project) {
+  if (P() !== project) return;
+  S().grade.deflicker = true;
+  applySettingsToUI();
+  onSettingChanged('grade.deflicker');
+  toast('Compensación de parpadeo activada: iguala la luz al reproducir y exportar. Las fotos no cambian. (Animar › Color y luz)', 'ok', 6000);
+}
+
+// Live watch: before shooting, compares the live view with the last frame
+// (light and camera position only, so hands at work do not trigger it).
+const liveWatch = { busy: false, last: '', streak: 0 };
+
+async function liveAssistTick() {
+  const el = els.hudAssist;
+  const p = P();
+  const fr = frames();
+  const on = p?.settings.assistant.live && camera.active && isLive() && !player.playing && fr.length && !document.hidden;
+  if (!on) { el.hidden = true; liveWatch.streak = 0; return; }
+  if (liveWatch.busy) return;
+  liveWatch.busy = true;
+  try {
+    const a = await frameAnalysis(fr[fr.length - 1].id);
+    if (!a || P() !== p || !camera.active) return;
+    const b = analysisOf(camera.video, camera.width, camera.height, { flipH: S().flipH, flipV: S().flipV });
+    if (a.h !== b.h) { el.hidden = true; return; }
+    const { issues } = compareFrames(a, b, assistOptions(p, ['bump', 'exposure']));
+    const sig = issues.map((x) => x.type).join();
+    // Only report what lasts for two checks in a row.
+    liveWatch.streak = sig === liveWatch.last ? liveWatch.streak + 1 : 0;
+    liveWatch.last = sig;
+    if (liveWatch.streak < 1) return;
+    el.hidden = !issues.length;
+    el.textContent = issues.map((x) => x.short).join(' · ');
+    el.title = issues.map((x) => x.text.replace('respecto al fotograma anterior', 'respecto al último fotograma')).join('\n');
+  } catch (err) {
+    console.warn('Vigilancia en vivo:', err);
+  } finally {
+    liveWatch.busy = false;
+  }
+}
+
+/** Checks every pair of consecutive frames of the take and lists what looks wrong. */
+async function reviewTake() {
+  const project = P();
+  const fr = frames().slice();
+  if (fr.length < 2) { toast('Hacen falta al menos 2 fotogramas para revisar la toma', 'info'); return; }
+  const btn = $('#btnReviewTake');
+  btn.disabled = true;
+  const found = [];
+  try {
+    let prev = null;
+    for (let i = 0; i < fr.length; i++) {
+      btn.textContent = `Revisando ${i + 1} / ${fr.length}…`;
+      const cur = await frameAnalysis(fr[i].id, false);
+      if (P() !== project) return;
+      if (prev && cur && prev.h === cur.h && fr[i].id !== fr[i - 1].id) {
+        const { issues } = compareFrames(prev, cur, assistOptions(project));
+        if (issues.length) found.push({ i, f: fr[i], issues });
+      }
+      prev = cur;
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Revisar toda la toma';
+  }
+  const items = found.map(({ i, f, issues }) => {
+    const li = document.createElement('li');
+    li.className = 'project-item';
+    li.innerHTML = `
+      <div class="thumb"></div>
+      <div class="info"><div class="name"></div><div class="sub"></div></div>
+      <div class="actions"><button class="btn" data-act="show">Ver</button></div>`;
+    li.querySelector('.name').textContent = `Fotograma ${i + 1}`;
+    li.querySelector('.sub').textContent = issues.map((x) => x.text).join(' ');
+    store.thumbUrl(f.id).then((url) => { if (url) li.querySelector('.thumb').style.backgroundImage = `url("${url}")`; });
+    li.querySelector('[data-act="show"]').addEventListener('click', () => { closeModal($('#modalList')); showDifferenceAt(f.key); });
+    return li;
+  });
+  showList('Revisión de la toma', found.length
+    ? `${found.length} ${found.length === 1 ? 'fotograma puede tener' : 'fotogramas pueden tener'} un problema. No se ha cambiado nada: «Ver» lo muestra en modo diferencia para que decidas.`
+    : 'No se encontraron problemas entre fotogramas consecutivos.', items);
 }
 
 // ---------------------------------------------------------------- test shot (A/B)
@@ -1659,10 +1826,24 @@ function closeModal(modal) {
   }
 }
 
+let projectListRun = 0;
+
+/** Refreshes the projects window; #projectList has aria-busy="true" until the list is current. */
 async function renderProjectList() {
-  const list = await library.listProjects();
-  const disk = library.kind === 'disk';
-  if (disk) return renderProductionList(list);
+  const run = ++projectListRun;
+  const ul = $('#projectList');
+  ul.setAttribute('aria-busy', 'true');
+  try {
+    const list = await library.listProjects();
+    if (run !== projectListRun) return;
+    if (library.kind === 'disk') renderProductionList(list);
+    else renderBrowserList(list);
+  } finally {
+    if (run === projectListRun) ul.setAttribute('aria-busy', 'false');
+  }
+}
+
+function renderBrowserList(list) {
   const ul = $('#projectList');
   ul.innerHTML = '';
   for (const p of list) {
@@ -2527,6 +2708,8 @@ function bindUI() {
 
   els.capture.addEventListener('click', () => capture());
   $('#btnTestShot').addEventListener('click', () => takeTestShot().catch((err) => toast(err.message, 'error')));
+  $('#btnReviewTake').addEventListener('click', () => reviewTake().catch((err) => toast(`No se pudo revisar la toma: ${err.message}`, 'error')));
+  setInterval(liveAssistTick, 900);
   $('#btnCompareTest').addEventListener('click', toggleCompareTest);
   if (cameraApi) {
     $('#btnTether').addEventListener('click', () => chooseTetherFolder().catch((err) => toast(err.message, 'error', 6000)));
