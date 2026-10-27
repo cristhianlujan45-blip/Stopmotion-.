@@ -109,7 +109,15 @@ const listTakes = () => {
     console.log('camInfo:', await win.evaluate(() => document.querySelector('#camInfo').textContent), errors);
     throw e;
   });
-  for (let i = 0; i < 3; i++) { await win.click('#btnCapture'); await win.waitForTimeout(600); }
+  // One photo at a time: while a photo is being taken the app ignores the button (no double shots).
+  for (let i = 0; i < 3; i++) {
+    await win.waitForFunction(() => !window.mesora.state.busy, null, { timeout: 15000 });
+    await win.click('#btnCapture');
+    await win.waitForFunction((n) => window.mesora.state.project.frames.length === n, i + 1, { timeout: 20000 }).catch(async (e) => {
+      console.log('estado:', await win.evaluate(() => ({ frames: window.mesora.state.project.frames.length, pending: window.mesora.state.pendingCaptures, busy: window.mesora.state.busy, camera: window.mesora.camera.active })));
+      throw e;
+    });
+  }
   await win.waitForFunction(() => window.mesora.state.project.frames.length === 3 && window.mesora.state.pendingCaptures === 0, null, { timeout: 15000 });
   await win.evaluate(() => window.mesora.state.project && document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })));
   await win.waitForTimeout(800);
