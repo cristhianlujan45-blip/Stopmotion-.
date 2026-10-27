@@ -24,7 +24,8 @@ async function launch() {
   const app = await electron.launch({
     // require('electron') returns the binary path and downloads it first if needed (Electron 45 has no postinstall).
     executablePath: require('electron'),
-    args: [repo, '--no-sandbox', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', ...GPU_ARGS],
+    // Spanish interface (the test machines are usually set to English); section 20 checks English.
+    args: [repo, '--no-sandbox', '--lang=es', `--user-data-dir=${profile}`, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', ...GPU_ARGS],
     env: { ...process.env, MESORA_LIBRARY: libDir, MESORA_TEST: '1' },
   });
   const win = await app.firstWindow();
@@ -659,6 +660,35 @@ const listTakes = () => {
     check(axisText.includes('31.1 mm'), `la foto se hizo con el carro en su posición calculada (acelerar y frenar): ${axisText.trim()}`);
     await win.selectOption('select[data-setting="moco.output"]', 'none');
     await win.click('[data-uimode="simple"]');
+  }
+
+  // 20) Interfaz en inglés: se elige en Ayuda y la app se recarga en ese idioma.
+  {
+    await win.click('#btnHelp');
+    await Promise.all([win.waitForEvent('load'), win.selectOption('#modalHelp .lang-select', 'en')]);
+    await win.waitForFunction(() => window.mesora?.state?.project, null, { timeout: 20000 });
+    await win.waitForTimeout(800);
+    const en = await win.evaluate(() => ({
+      lang: document.documentElement.lang,
+      capture: document.querySelector('#btnCapture').textContent.trim(),
+      projects: document.querySelector('#btnProjects').textContent.trim(),
+      hud: document.querySelector('#hudMode').textContent.trim(),
+      frame: document.querySelector('#hudFrame').textContent.trim(),
+      tab: document.querySelector('.tab[data-tab="camera"]').textContent.trim(),
+      tip: document.querySelector('#tPlay').title,
+      take: document.querySelector('#takeLabel').textContent.trim(),
+    }));
+    log('inglés:', JSON.stringify(en));
+    check(en.lang === 'en' && en.capture === 'Capture' && en.projects === 'Projects' && en.tab === 'Camera' && en.tip === 'Play (0 / Space)', 'botones, pestañas y ayudas en inglés');
+    check(/^(LIVE|REVIEW)$/.test(en.hud) && /^(Next: frame \d+|Frame \d+ \/ \d+)$/.test(en.frame), 'el visor también: estado y fotograma');
+    check(/^Scene \d+ · Take \d+$/.test(en.take), 'los nombres de escena y toma se muestran en inglés');
+    await win.click('#btnExport');
+    check(await win.textContent('#btnDxVideo') === 'Export film', 'la ventana de exportar en inglés');
+    await win.keyboard.press('Escape');
+    await win.click('#btnHelp');
+    await Promise.all([win.waitForEvent('load'), win.selectOption('#modalHelp .lang-select', 'es')]);
+    await win.waitForFunction(() => window.mesora?.state?.project, null, { timeout: 20000 });
+    check(await win.evaluate(() => document.querySelector('#btnCapture').textContent.trim()) === 'Capturar', 'y se vuelve al español');
   }
 
   check(errors.length === 0, `sin errores en la consola${errors.length ? `: ${errors.join(' | ')}` : ''}`);

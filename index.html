@@ -817,6 +817,7 @@
         <div class="help-top">
           <p class="muted">Rueda del ratón: desplazar la línea de tiempo · <kbd>Ctrl</kbd> + rueda: zoom · arrastra la regla de tiempo para recorrer la animación · arrastra fotogramas para reordenarlos.</p>
           <div class="row">
+            <label class="lang-field" title="Idioma de la interfaz"><span>Idioma</span><select class="lang-select" aria-label="Idioma" data-no-i18n></select></label>
             <button class="btn" id="btnShowWelcome">Ver guía de inicio</button>
             <button class="btn" id="btnLearn" title="MESORA te guía paso a paso en tu primera animación">Modo aprendizaje</button>
           </div>
@@ -836,7 +837,7 @@
 
   <div class="modal" id="modalWelcome" hidden>
     <div class="modal-card wide welcome">
-      <header><h2>Bienvenido a MESORA Studio</h2><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
+      <header><h2>Bienvenido a MESORA Studio</h2><select class="lang-select welcome-lang" aria-label="Idioma" data-no-i18n></select><button class="btn icon close" data-close aria-label="Cerrar">×</button></header>
       <div class="modal-body">
         <p class="lead">Haz tu primera animación stop motion en cuatro pasos:</p>
         <ol class="steps">

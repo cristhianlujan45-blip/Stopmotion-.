@@ -12,6 +12,10 @@ import { MOUTHS, mouthFor, mouthLabel, draftMouths } from './lipsync.js';
 import { buildReviewPackage, parseReviewNotes } from './review.js';
 import { LEARN_STEPS, currentStep } from './learn.js';
 import { Rig, defaultLighting, defaultMoco } from './rig.js';
+import { setupI18n, currentLang, saveLang, LANGS, t } from './i18n.js';
+
+// Before anything else is drawn, so the whole interface comes up in the chosen language.
+setupI18n();
 import { createViewer } from './viewer-gl.js';
 import { ACTIONS, Keymap, comboOf, comboLabel } from './shortcuts.js';
 import { XSheetView, xsheetToCSV, xsheetFromCSV, xsheetTableHTML } from './xsheet.js';
@@ -2384,7 +2388,7 @@ function renderProductionList(list) {
 async function openMostRecent() {
   const [recent] = await library.listProjects();
   const opened = (recent && await library.getProject(recent.id).catch(() => null))
-    || { project: await library.createProject(newProject('Mi animación')), report: null };
+    || { project: await library.createProject(newProject(t('Mi animación'))), report: null };
   state.project = null;
   await openProject(opened.project, opened.report);
 }
@@ -3344,7 +3348,7 @@ function bindUI() {
     drawWave();
   });
   els.projectName.addEventListener('change', () => {
-    P().name = els.projectName.value.trim() || 'Sin título';
+    P().name = els.projectName.value.trim() || t('Sin título');
     els.projectName.value = P().name;
     saveSoon();
   });
@@ -3382,7 +3386,7 @@ function bindUI() {
   $('#btnProjects').addEventListener('click', () => { renderProjectList(); openModal('#modalProjects'); });
   $('#formNewProject').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const p = await library.createProject(newProject($('#newProjectName').value.trim() || 'Sin título', Number($('#newProjectFps').value)));
+    const p = await library.createProject(newProject($('#newProjectName').value.trim() || t('Sin título'), Number($('#newProjectFps').value)));
     $('#newProjectName').value = '';
     closeModal($('#modalProjects'));
     await openProject(p);
@@ -3405,6 +3409,15 @@ function bindUI() {
   $('#btnHelp').addEventListener('click', () => openModal('#modalHelp'));
   $('#btnShowWelcome').addEventListener('click', showWelcome);
   $('#btnWelcomeHelp').addEventListener('click', () => { closeModal($('#modalWelcome')); openModal('#modalHelp'); });
+  for (const sel of $$('.lang-select')) {
+    sel.innerHTML = Object.entries(LANGS).map(([code, name]) => `<option value="${code}">${name}</option>`).join('');
+    sel.value = currentLang();
+    sel.addEventListener('change', async () => {
+      saveLang(sel.value);
+      await saveNow().catch(() => {});
+      location.reload();
+    });
+  }
   $('#btnWelcomeLearn').addEventListener('click', startCoach);
   $('#btnLearn').addEventListener('click', startCoach);
   $('#btnCoachNext').addEventListener('click', coachNext);
@@ -3539,7 +3552,7 @@ async function init() {
     const [recent] = await library.listProjects();
     if (recent) opened = await library.getProject(recent.id).catch(() => null);
   }
-  if (!opened) opened = { project: await library.createProject(newProject('Mi primera animación')), report: null };
+  if (!opened) opened = { project: await library.createProject(newProject(t('Mi primera animación'))), report: null };
   await openProject(opened.project, opened.report);
   buildCamControls();
   updateCamUI();
