@@ -31,7 +31,8 @@ async function launch() {
   });
   const win = await app.firstWindow();
   const errors = [];
-  win.on('pageerror', (e) => errors.push(String(e)));
+  // With the place where it happened (the first lines of the stack), to find intermittent errors on slow machines.
+  win.on('pageerror', (e) => errors.push(String(e.stack || e).split('\n').slice(0, 4).join(' ← ')));
   win.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   Object.assign(current, { app, win, errors });
   await win.waitForFunction(() => window.mesora?.state?.project, null, { timeout: 20000 });
