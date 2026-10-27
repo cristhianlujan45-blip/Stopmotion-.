@@ -587,6 +587,72 @@ const listTakes = () => {
     check(await win.evaluate(() => document.querySelector('#coach').hidden && !document.querySelector('.coach-target')), 'al terminar, el tutorial se cierra');
   }
 
+  // 19) Luz DMX y motion control, solo con simuladores (y Art-Net a un socket de este mismo ordenador).
+  {
+    const dgram = require('node:dgram');
+    const { parseArtnet } = await import('../../js/dmx.js');
+    const setVal = (sel, v) => win.evaluate(([q, val]) => { const el = document.querySelector(q); el.value = val; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }, [sel, String(v)]);
+    await win.click('[data-uimode="studio"]');
+    await win.click('.tab[data-tab="light"]');
+    await win.selectOption('select[data-setting="lighting.output"]', 'sim');
+    await win.click('#btnAddLight');
+    await win.click('#btnAddLight');
+    await setVal('#lightList li:nth-child(2) [data-f="channel"]', 5);
+    await win.click('#btnAddLook'); await win.fill('#askInput', 'Día'); await win.press('#askInput', 'Enter');
+    await win.waitForSelector('#lookSliders .look-row');
+    await win.click('#btnAddLightKey');
+    await setVal('#lightKeys li [data-f="exposure"]', 1);
+    await win.click('#btnAddLook'); await win.fill('#askInput', 'Noche'); await win.press('#askInput', 'Enter');
+    await win.waitForFunction(() => document.querySelector('#lookSelect').selectedOptions[0]?.textContent === 'Noche');
+    await setVal('#lookSliders .look-row:nth-child(1) input', 10);
+    await setVal('#lookSliders .look-row:nth-child(2) input', 0);
+    await win.click('#btnAddLightKey');
+    const L = await win.evaluate(() => window.mesora.state.project.settings.lighting);
+    const next = await win.evaluate(() => window.mesora.state.project.frames.reduce((n, f) => n + f.hold, 0) + 1);
+    check(L.lights.length === 2 && L.looks.length === 2 && L.keys.length === 2 && L.keys.some((k) => k.exposure === next), `programa de luz: Día desde la 1, Noche desde la ${next}`);
+
+    // Art-Net real hacia 127.0.0.1:6454 (el puerto oficial), recibido por la prueba.
+    const sock = dgram.createSocket('udp4');
+    const packet = new Promise((resolve) => sock.on('message', (m) => resolve(parseArtnet(m))));
+    await new Promise((r) => sock.bind(6454, '127.0.0.1', r));
+    await win.selectOption('select[data-setting="lighting.output"]', 'artnet');
+    await win.fill('input[data-setting="lighting.artnetHost"]', '127.0.0.1');
+    await win.press('input[data-setting="lighting.artnetHost"]', 'Tab');
+    const before = await win.evaluate(() => window.mesora.state.project.frames.length);
+    await win.click('#btnCapture');
+    await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 1 && window.mesora.state.pendingCaptures === 0, before, { timeout: 15000 });
+    const art = await Promise.race([packet, new Promise((r) => setTimeout(() => r(null), 5000))]);
+    sock.close();
+    check(art && art.data[0] === 26 && art.data[4] === 0, `antes de la foto se envió el look «Noche» por Art-Net (canal 1 = ${art?.data[0]}, canal 5 = ${art?.data[4]})`);
+    check((await win.textContent('#lightView')).includes('10 %'), 'la vista de luces muestra el nivel enviado');
+    await win.selectOption('select[data-setting="lighting.output"]', 'none');
+
+    // Motion control con el simulador: claves, curva y espera antes de disparar.
+    await win.click('.tab[data-tab="motion"]');
+    await win.selectOption('select[data-setting="moco.output"]', 'sim');
+    await win.click('#btnAddAxis');
+    await win.click('#btnMocoConnect');
+    await win.waitForFunction(() => /Simulador conectado/.test(document.querySelector('#mocoStatus').textContent));
+    const shoot = await win.evaluate(() => window.mesora.state.project.frames.reduce((n, f) => n + f.hold, 0) + 1);
+    await win.click('#btnAddAxisKey');
+    await setVal('#axisKeys li [data-f="exposure"]', shoot - 4);
+    await setVal('#axisList li [data-go]', 40);
+    await win.click('#axisList li [data-act="go"]');
+    await win.waitForFunction(() => /40\.0 mm/.test(document.querySelector('#axisView').textContent), null, { timeout: 10000 });
+    log('OK «Ir a 40» mueve el eje del simulador');
+    await win.click('#btnAddAxisKey');
+    await setVal(`#axisKeys li:nth-child(2) [data-f="exposure"]`, shoot + 2);
+    const n0 = await win.evaluate(() => window.mesora.state.project.frames.length);
+    const sawMoving = win.waitForFunction(() => /Moviendo/.test(document.querySelector('#hudFlags').textContent), null, { timeout: 10000 }).then(() => true, () => false);
+    await win.click('#btnCapture');
+    check(await sawMoving, 'antes de la foto el visor indica «Moviendo…»');
+    await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 1 && window.mesora.state.pendingCaptures === 0, n0, { timeout: 15000 });
+    const axisText = await win.textContent('#axisView');
+    check(axisText.includes('31.1 mm'), `la foto se hizo con el carro en su posición calculada (acelerar y frenar): ${axisText.trim()}`);
+    await win.selectOption('select[data-setting="moco.output"]', 'none');
+    await win.click('[data-uimode="simple"]');
+  }
+
   check(errors.length === 0, `sin errores en la consola${errors.length ? `: ${errors.join(' | ')}` : ''}`);
   await app.close();
   fs.rmSync(work, { recursive: true, force: true });

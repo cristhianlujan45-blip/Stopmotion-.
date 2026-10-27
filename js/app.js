@@ -11,6 +11,7 @@ import { AudioMix, TRACK_COLORS, encodeWav, exposureLevels } from './audio.js';
 import { MOUTHS, mouthFor, mouthLabel, draftMouths } from './lipsync.js';
 import { buildReviewPackage, parseReviewNotes } from './review.js';
 import { LEARN_STEPS, currentStep } from './learn.js';
+import { Rig, defaultLighting, defaultMoco } from './rig.js';
 import { createViewer } from './viewer-gl.js';
 import { ACTIONS, Keymap, comboOf, comboLabel } from './shortcuts.js';
 import { XSheetView, xsheetToCSV, xsheetFromCSV, xsheetTableHTML } from './xsheet.js';
@@ -60,6 +61,8 @@ function defaultSettings() {
     tether: { folder: '', assist: true },
     assistant: { enabled: true, live: true, sensitivity: 'normal' },
     lipsync: { characters: [], active: '', hud: true },
+    lighting: defaultLighting(),
+    moco: defaultMoco(),
     xsheet: { animator: '', length: 48, plan: {} },
     playSpeed: 1,
     display: 'preview',
@@ -164,6 +167,13 @@ const camera = new Camera($('#video'));
 const store = new FrameStore({ onLoad: () => { state.dirty = true; } });
 const history = new History();
 const audio = new AudioMix();
+const rig = new Rig({
+  settings: () => S(),
+  save: () => saveSoon(),
+  toast,
+  nextExposure: () => totalExposures(frames()) + 1,
+  onBusy: (text) => { state.rigBusy = text; updateHudFlags(); },
+});
 const viewer = createViewer({
   area: els.area, stage: els.stage, main: $('#mainCanvas'), overlay: $('#overlayCanvas'),
   guides: els.guides, loupe: els.loupe,
@@ -236,6 +246,8 @@ async function openProject(p, report = null) {
   viewer.setSize(p.width, p.height);
   applySettingsToUI();
   renderLipSync();
+  rig.invalidate();
+  rig.render();
   renderTimeline();
   await restoreAudio();
   await restoreChromaBg();
@@ -744,6 +756,12 @@ async function capture(mode = 'append', { skipDelay = false, hold = 1 } = {}) {
   try {
     if (s.delay > 0 && !skipDelay) await countdown(s.delay);
     if (!camera.active) return;
+    try {
+      await rig.prepare(exposureForCapture(mode));
+    } catch (err) {
+      toast(`No se hizo la foto: la luz o el movimiento no están listos (${err.message})`, 'error', 7000);
+      return;
+    }
     canvas = await camera.grab({ average: s.average, flipH: s.flipH, flipV: s.flipV });
   } catch (err) {
     toast(`Error al capturar: ${err.message}`, 'error', 4500);
@@ -781,6 +799,7 @@ async function capture(mode = 'append', { skipDelay = false, hold = 1 } = {}) {
       }
     });
     assistAfterShot(project, entry.key, canvas);
+    readyRigForNext();
   }).catch((err) => {
     console.error(err);
     const quota = err?.name === 'QuotaExceededError';
@@ -791,6 +810,20 @@ async function capture(mode = 'append', { skipDelay = false, hold = 1 } = {}) {
   });
   saveChain = job;
   return job;
+}
+
+/** Exposure (1-based) that a capture in `mode` will occupy. */
+function exposureForCapture(mode) {
+  const fr = frames();
+  const at = state.playhead;
+  if (mode === 'replace' && at < fr.length) return exposureStart(fr, at) + 1;
+  if (mode === 'insert' && at < fr.length) return exposureStart(fr, at) + fr[at].hold + 1;
+  return totalExposures(fr) + 1;
+}
+
+/** After a photo, lights and axes go to the next exposure while the animator works. */
+function readyRigForNext() {
+  rig.prepare(totalExposures(frames()) + 1).catch((err) => toast(`Luz o movimiento: ${err.message}`, 'error', 7000));
 }
 
 // ---------------------------------------------------------------- photo camera (tethering folder)
@@ -872,6 +905,7 @@ function onCameraPhoto({ key, id, display }) {
     });
     flash();
     assistAfterShot(project, entry.key);
+    readyRigForNext();
   }).catch((err) => {
     console.error(err);
     toast(`No se pudo añadir la foto de la cámara: ${err.message}`, 'error', 6000);
@@ -1041,6 +1075,48 @@ async function reviewTake() {
   showList('Revisión de la toma', found.length
     ? `${found.length} ${found.length === 1 ? 'fotograma puede tener' : 'fotogramas pueden tener'} un problema. No se ha cambiado nada: «Ver» lo muestra en modo diferencia para que decidas.`
     : 'No se encontraron problemas entre fotogramas consecutivos.', items);
+}
+
+// ---------------------------------------------------------------- lights and motion control
+
+function wireRig() {
+  const fail = (sel) => (err) => rig.status(sel, err.message, true);
+  for (const id of ['#lightList', '#lightKeys', '#lookSliders']) {
+    $(id).addEventListener('input', (e) => rig.onLightsInput(e));
+    $(id).addEventListener('change', (e) => rig.onLightsInput(e));
+  }
+  $('#lightList').addEventListener('click', (e) => rig.onListClick(e, () => S().lighting.lights, () => rig.renderLights()));
+  $('#lightKeys').addEventListener('click', (e) => rig.onListClick(e, () => S().lighting.keys, () => rig.renderLights()));
+  $('#btnAddLight').addEventListener('click', () => rig.addLight());
+  $('#btnAddLightKey').addEventListener('click', () => rig.addLightKey());
+  $('#btnAddLook').addEventListener('click', async () => {
+    const name = await askText('Nombre del look', `Look ${S().lighting.looks.length + 1}`);
+    if (name?.trim()) rig.addLook(name.trim());
+  });
+  $('#btnRenameLook').addEventListener('click', async () => {
+    const look = S().lighting.looks.find((k) => k.id === rig.editLook);
+    const name = look && await askText('Nuevo nombre del look', look.name);
+    if (!name?.trim()) return;
+    look.name = name.trim();
+    rig.changed();
+    rig.renderLights();
+  });
+  $('#lookSelect').addEventListener('change', (e) => {
+    rig.editLook = e.target.value;
+    rig.renderLights();
+    const look = S().lighting.looks.find((k) => k.id === rig.editLook);
+    if (look && $('#lookLive').checked && S().lighting.output !== 'none') rig.sendLevels({ ...look.levels }).catch(fail('#dmxStatus'));
+  });
+  $('#btnDmxConnect').addEventListener('click', () => rig.connectDmx().catch(fail('#dmxStatus')));
+  for (const id of ['#axisList', '#axisKeys']) {
+    $(id).addEventListener('input', (e) => rig.onAxesInput(e));
+    $(id).addEventListener('change', (e) => rig.onAxesInput(e));
+    $(id).addEventListener('click', (e) => rig.onAxesClick(e));
+  }
+  $('#btnAddAxis').addEventListener('click', () => rig.addAxis());
+  $('#btnAddAxisKey').addEventListener('click', () => rig.addAxisKeys());
+  $('#btnMocoConnect').addEventListener('click', () => rig.connectMoco().catch(fail('#mocoStatus')));
+  $('#btnMocoZero').addEventListener('click', () => rig.zero().catch(fail('#mocoStatus')));
 }
 
 // ---------------------------------------------------------------- automatic backup (desktop)
@@ -1422,6 +1498,7 @@ function updateHudFlags() {
   if (s.delay > 0) flags.push(`Retardo ${s.delay}s`);
   if (state.timelapseTimer) flags.push(`Intervalómetro ${s.timelapseInterval}s`);
   if (state.drawing) flags.push('Dibujando guías');
+  if (state.rigBusy) flags.push(state.rigBusy);
   els.hudFlags.innerHTML = '';
   for (const f of flags) {
     const span = document.createElement('span');
@@ -1517,6 +1594,11 @@ function onSettingChanged(path) {
   if (path === 'display') applyDisplayKind();
   if (path.startsWith('xsheet.')) renderXSheet();
   if (path.startsWith('lipsync.')) updateHud();
+  if (path.startsWith('lighting.') || path.startsWith('moco.')) {
+    rig.invalidate();
+    if (path === 'moco.output' || ((path === 'moco.speed' || path === 'moco.accel') && rig.moco)) rig.disconnectMoco();
+    rig.updateOutputUI();
+  }
   updateHudFlags();
   updateTransport();
 }
@@ -3202,6 +3284,7 @@ function bindUI() {
     $('#btnBackupNow').addEventListener('click', () => backupAction(backupApi.run));
     $('#btnBackupOff').addEventListener('click', () => backupAction(backupApi.disable));
   }
+  wireRig();
   if (remoteApi) {
     $('#btnRemote').addEventListener('click', toggleRemote);
     remoteApi.onAction((action) => ACTION_RUN[action]?.());

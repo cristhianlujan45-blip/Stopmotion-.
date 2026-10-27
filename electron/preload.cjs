@@ -41,6 +41,9 @@ contextBridge.exposeInMainWorld('mesoraDesktop', {
     disable: () => ipcRenderer.invoke('backup:disable'),
     onStatus: (cb) => ipcRenderer.on('backup:status', (_e, s) => cb(s)),
   },
+  rig: {
+    artnet: (host, bytes) => ipcRenderer.invoke('rig:artnet', host, bytes),
+  },
   library: {
     call: (method, ...args) => ipcRenderer.invoke('library', method, ...args),
     root: () => ipcRenderer.invoke('library:root'),

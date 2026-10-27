@@ -534,6 +534,14 @@ details.menu > summary::-webkit-details-marker { display: none; }
 .offscreen-video { position: fixed; left: -10000px; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
 
 /* ---------- Responsive ---------- */
+/* Medium windows: the transport bar is compacted so that everything fits beside Capturar. */
+@media (max-width: 1440px) {
+  .transport { gap: 10px; }
+  .transport .label { display: none; }
+  .note-input { width: 110px; }
+  .zoom-range { max-width: 90px; }
+}
+
 @media (max-width: 960px) {
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .sidepanel {
@@ -618,3 +626,29 @@ code.selectable { user-select: all; word-break: break-all; font-size: 11.5px; }
 .coach-actions { justify-content: flex-end; gap: 6px; }
 .coach-target { position: relative; z-index: 5; box-shadow: 0 0 0 3px var(--sel), 0 0 0 7px rgba(59,130,246,.35) !important; animation: coach-pulse 1.4s ease-in-out infinite; }
 @keyframes coach-pulse { 50% { box-shadow: 0 0 0 3px var(--sel), 0 0 0 11px rgba(59,130,246,.12) !important; } }
+
+/* Lights (DMX) and motion control */
+.rig-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rig-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); font-size: 12px; color: var(--muted); }
+.rig-list li label { display: flex; align-items: center; gap: 4px; }
+.rig-list input[type=number] { width: 58px; }
+.rig-list li > * { min-width: 0; }
+.rig-list .break { flex-basis: 100%; height: 0; }
+.rig-list .btn.small { padding: 0 8px; }
+.rig-list input[type=color] { width: 30px; height: 26px; padding: 0; border: 0; background: none; }
+.rig-list .grow { flex: 1 1 0; min-width: 60px; }
+.rig-list .unit { width: 60px; }
+.rig-list .axis-name { color: var(--text); font-weight: 600; min-width: 70px; }
+.light-view { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 10px; }
+.lamp { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); min-width: 52px; }
+.lamp .bulb { width: 26px; height: 26px; border-radius: 50%; transition: opacity .15s, box-shadow .15s; }
+.lamp b { color: var(--text); font-weight: 600; }
+.look-sliders { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.look-row { display: grid; grid-template-columns: 90px 1fr 44px; align-items: center; gap: 8px; font-size: 12px; }
+.look-row b { text-align: right; font-weight: 600; }
+.axis-view { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
+.axis-bar { display: grid; grid-template-columns: 90px 1fr 90px; align-items: center; gap: 8px; font-size: 12px; }
+.axis-bar .track { position: relative; height: 6px; border-radius: 3px; background: var(--panel-3); }
+.axis-bar .track i { position: absolute; top: -4px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--accent-2); }
+.axis-bar.moving .track i { animation: pulse 0.6s infinite; }
+.axis-bar b { text-align: right; font-weight: 600; }

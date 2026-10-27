@@ -12,6 +12,7 @@ const { serveExport } = require('./export-ipc.cjs');
 const { serveCamera } = require('./camera-ipc.cjs');
 const { serveRemote } = require('./remote-ipc.cjs');
 const { serveBackup } = require('./backup-ipc.cjs');
+const { serveRig } = require('./rig-ipc.cjs');
 
 const WEB_ROOT = path.join(__dirname, '..', 'www');
 const START_URL = 'app://mesora/index.html';
@@ -89,7 +90,7 @@ function serveWebApp() {
 }
 
 function allowCamera() {
-  const allowed = new Set(['media', 'fullscreen', 'clipboard-sanitized-write']);
+  const allowed = new Set(['media', 'fullscreen', 'clipboard-sanitized-write', 'serial']);
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.has(permission)));
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => allowed.has(permission));
 }
@@ -236,7 +237,8 @@ app.whenReady().then(async () => {
   const camera = serveCamera({ ipcMain, dialog, library, getWindow: () => mainWindow, fromApp, log });
   const remote = serveRemote({ ipcMain, getWindow: () => mainWindow, fromApp, log });
   const backup = serveBackup({ ipcMain, dialog, app, library, getWindow: () => mainWindow, fromApp, log });
-  app.on('before-quit', () => { exports.cancelAll(); camera.stop(); remote.stop(); backup.stop(); });
+  const rig = serveRig({ ipcMain, dialog, session, getWindow: () => mainWindow, fromApp, log });
+  app.on('before-quit', () => { exports.cancelAll(); camera.stop(); remote.stop(); backup.stop(); rig.stop(); });
   allowCamera();
   buildMenu();
   if (process.platform === 'darwin' && !process.env.MESORA_TEST) {

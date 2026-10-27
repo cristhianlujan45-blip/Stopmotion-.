@@ -1,5 +1,5 @@
 // Offline support: network first, falling back to the cached copy.
-const CACHE = 'mesora-v6';
+const CACHE = 'mesora-v7';
 const ASSETS = [
   './',
   './index.html',
@@ -11,6 +11,7 @@ const ASSETS = [
   './js/audio.js',
   './js/camera.js',
   './js/db.js',
+  './js/dmx.js',
   './js/exporter.js',
   './js/framestore.js',
   './js/grading.js',
@@ -20,9 +21,11 @@ const ASSETS = [
   './js/lipsync.js',
   './js/media.js',
   './js/migrate.js',
+  './js/moco.js',
   './js/monitor.js',
   './js/platform.js',
   './js/projectio.js',
+  './js/rig.js',
   './js/review.js',
   './js/shortcuts.js',
   './js/timeline.js',

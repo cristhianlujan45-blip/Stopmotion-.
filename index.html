@@ -38,6 +38,8 @@
     <symbol id="i-wave" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M3 12h2M7 8v8M11 4v16M15 7v10M19 10v4M21 12h0"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3 6h7l2 2h9v11H3z"/></symbol>
     <symbol id="i-table" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M4 4h16v16H4zM4 9h16M4 14h16M9 4v16"/></symbol>
+    <symbol id="i-light" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3z"/></symbol>
+    <symbol id="i-motion" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 17h18M6 17v-3h5v3M14 12l4-4M15 8h3v3"/></symbol>
     <symbol id="i-monitor" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M3 4h18v12H3zM8 20h8M12 16v4"/></symbol>
   </svg>
 
@@ -109,6 +111,8 @@
         <button class="tab" data-tab="guides" role="tab" title="Dibujar trayectorias y cargar referencias"><svg class="ic"><use href="#i-pen"/></svg><span>Guías</span></button>
         <button class="tab studio-only" data-tab="xsheet" role="tab" title="Hoja de exposición: planifica acción, diálogo, fonemas, cámara y luz"><svg class="ic"><use href="#i-table"/></svg><span>X-Sheet</span></button>
         <button class="tab" data-tab="audio" role="tab" title="Sonido y sincronía de labios"><svg class="ic"><use href="#i-wave"/></svg><span>Audio</span></button>
+        <button class="tab studio-only" data-tab="light" role="tab" title="Luces DMX: looks y cambios de luz por exposición"><svg class="ic"><use href="#i-light"/></svg><span>Luz</span></button>
+        <button class="tab studio-only" data-tab="motion" role="tab" title="Motion control: mover la cámara o el decorado entre fotos"><svg class="ic"><use href="#i-motion"/></svg><span>Movim.</span></button>
         <button class="tab" data-tab="tools" role="tab" title="Velocidad, papelera, historial y herramientas del proyecto"><svg class="ic"><use href="#i-folder"/></svg><span>Proyecto</span></button>
       </nav>
       <div class="panels">
@@ -478,6 +482,82 @@
           <option value="CS">C · S · R…</option>
           <option value="-">Reposo</option>
         </datalist>
+      </div>
+
+      <div class="tabpanel" data-panel="light">
+        <details class="group" data-sec="luces-dmx" open>
+          <summary>Luces DMX</summary>
+          <p class="muted small">Cada foto se hace con la luz de su exposición: antes de disparar, MESORA envía los niveles. Sin aparatos, prueba con el simulador.</p>
+          <div class="light-view" id="lightView"></div>
+          <label class="field"><span>Salida</span>
+            <select data-setting="lighting.output">
+              <option value="none">Desactivada</option>
+              <option value="sim">Simulador (sin aparatos)</option>
+              <option value="artnet" class="desktop-app-only">Art-Net por la red</option>
+              <option value="enttec">ENTTEC DMX USB Pro</option>
+            </select>
+          </label>
+          <div class="grid2" id="artnetFields" hidden>
+            <label class="field"><span>IP del nodo</span><input data-setting="lighting.artnetHost" placeholder="255.255.255.255" spellcheck="false"></label>
+            <label class="field"><span>Universo</span><input type="number" min="0" max="32767" data-setting="lighting.universe" data-type="number"></label>
+          </div>
+          <div class="row" id="enttecRow" hidden><button class="btn grow" id="btnDmxConnect">Conectar el ENTTEC…</button></div>
+          <label class="field"><span>Espera tras cambiar la luz (ms)</span><input type="number" min="0" max="5000" step="50" data-setting="lighting.settleMs" data-type="number"></label>
+          <p class="muted small" id="dmxStatus"></p>
+        </details>
+        <details class="group" data-sec="luces" open>
+          <summary>Luces</summary>
+          <ul class="rig-list" id="lightList"></ul>
+          <div class="row"><button class="btn grow" id="btnAddLight">Añadir luz</button></div>
+        </details>
+        <details class="group" data-sec="looks" open>
+          <summary>Looks</summary>
+          <div class="row"><select id="lookSelect" class="grow" aria-label="Look que editas"></select><button class="btn" id="btnAddLook">Nuevo</button><button class="btn ghost" id="btnRenameLook">Renombrar</button></div>
+          <div class="look-sliders" id="lookSliders"></div>
+          <label class="check"><input type="checkbox" id="lookLive" checked> Enviar a las luces mientras ajusto</label>
+        </details>
+        <details class="group" data-sec="programa-de-luz" open>
+          <summary>Programa de luz</summary>
+          <p class="muted small">Qué look tiene el set desde cada exposición. «Fundido» pasa poco a poco desde la clave anterior.</p>
+          <ul class="rig-list" id="lightKeys"></ul>
+          <div class="row"><button class="btn grow" id="btnAddLightKey" title="El look elegido arriba empieza en la siguiente exposición (la que vas a fotografiar)">Añadir clave con este look</button></div>
+        </details>
+      </div>
+
+      <div class="tabpanel" data-panel="motion">
+        <details class="group" data-sec="motion-control" open>
+          <summary>Motion control</summary>
+          <p class="muted small">Antes de cada foto MESORA mueve los ejes (carro, panorámica, inclinación…) a su posición para esa exposición y espera a que paren. Sin motores, prueba con el simulador.</p>
+          <div class="axis-view" id="axisView"></div>
+          <label class="field"><span>Controlador</span>
+            <select data-setting="moco.output">
+              <option value="none">Desactivado</option>
+              <option value="sim">Simulador (sin motores)</option>
+              <option value="serial">MESORA-Moco por USB (Arduino)</option>
+            </select>
+          </label>
+          <div class="row" id="mocoConnectRow" hidden>
+            <button class="btn grow" id="btnMocoConnect">Conectar</button>
+            <button class="btn ghost" id="btnMocoZero" title="La posición actual de los motores pasa a ser 0">Poner a cero</button>
+          </div>
+          <div class="grid2">
+            <label class="field"><span>Velocidad (pasos/s)</span><input type="number" min="10" max="40000" data-setting="moco.speed" data-type="number"></label>
+            <label class="field"><span>Aceleración (pasos/s²)</span><input type="number" min="10" max="200000" data-setting="moco.accel" data-type="number"></label>
+          </div>
+          <p class="muted small" id="mocoStatus"></p>
+        </details>
+        <details class="group" data-sec="ejes" open>
+          <summary>Ejes</summary>
+          <ul class="rig-list" id="axisList"></ul>
+          <div class="row"><button class="btn grow" id="btnAddAxis">Añadir eje</button></div>
+        </details>
+        <details class="group" data-sec="claves-de-movimiento" open>
+          <summary>Claves de movimiento</summary>
+          <p class="muted small">Coloca los ejes con «Ir a» y guarda su posición en una exposición. Entre claves, MESORA calcula el recorrido con la curva elegida.</p>
+          <ul class="rig-list" id="axisKeys"></ul>
+          <div class="row"><button class="btn grow" id="btnAddAxisKey" title="Guarda dónde están ahora todos los ejes como clave de la siguiente exposición (la que vas a fotografiar)">Guardar posición como clave</button></div>
+          <canvas id="mocoChart" class="sp-chart" width="288" height="90" aria-label="Recorrido de los ejes"></canvas>
+        </details>
       </div>
 
       <div class="tabpanel xsheet-panel" data-panel="xsheet">
