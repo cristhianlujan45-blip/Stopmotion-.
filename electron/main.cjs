@@ -235,7 +235,7 @@ app.whenReady().then(async () => {
   serveAppInfo();
   const exports = serveExport({ ipcMain, dialog, shell, library, getWindow: () => mainWindow, fromApp, log });
   const camera = serveCamera({ ipcMain, dialog, library, getWindow: () => mainWindow, fromApp, log });
-  const remote = serveRemote({ ipcMain, getWindow: () => mainWindow, fromApp, log });
+  const remote = serveRemote({ ipcMain, getWindow: () => mainWindow, fromApp, log, dataDir: app.getPath('userData') });
   const backup = serveBackup({ ipcMain, dialog, app, library, getWindow: () => mainWindow, fromApp, log });
   const rig = serveRig({ ipcMain, dialog, session, getWindow: () => mainWindow, fromApp, log });
   app.on('before-quit', () => { exports.cancelAll(); camera.stop(); remote.stop(); backup.stop(); rig.stop(); });

@@ -33,7 +33,8 @@ export class FrameStore {
   /** Stores a captured canvas. Resolves to { id, w, h }. */
   async addFromCanvas(projectId, canvas, { format = 'jpeg', quality = 0.95 } = {}) {
     const type = format === 'png' ? 'image/png' : 'image/jpeg';
-    const full = await canvasToBlob(canvas, type, quality);
+    // A photo that arrives already encoded as asked (the phone's) is kept as is: no second compression.
+    const full = canvas.encoded?.type === type ? canvas.encoded : await canvasToBlob(canvas, type, quality);
     return this._add(projectId, canvas, canvas.width, canvas.height, full);
   }
 

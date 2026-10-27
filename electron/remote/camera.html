@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>MESORA · Cámara</title>
+<style>
+  :root { --text: #e8eaef; --muted: #a3aab8; --accent: #ff4d3d; --live: #22c55e; --warn: #fbbf24; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--text); font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  .bar { position: fixed; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: 10px max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left)); background: rgba(0, 0, 0, .55); }
+  #top { top: 0; padding-top: max(10px, env(safe-area-inset-top)); }
+  #top b { font-size: 13px; letter-spacing: .12em; flex: none; }
+  #status { flex: 1; min-width: 0; font-weight: 600; }
+  #status.ok { color: var(--live); }
+  #status.warn { color: var(--warn); }
+  #status.err { color: #ff8a80; }
+  #bottom { bottom: 0; padding-bottom: max(10px, env(safe-area-inset-bottom)); justify-content: center; }
+  button { min-height: 48px; padding: 0 18px; border: 1px solid #3a404c; border-radius: 12px; background: #1c1f26; color: var(--text); font: inherit; font-weight: 600; }
+  button:active { background: #2b303b; }
+  #help { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 32px)); padding: 16px; border-radius: 14px; background: rgba(20, 22, 28, .92); color: var(--muted); font-size: 14px; }
+  #help b { color: var(--text); }
+  #black { position: fixed; inset: 0; background: #000; color: #333; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 40px; font-size: 13px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+  <video id="video" playsinline muted autoplay></video>
+  <div class="bar" id="top"><b>MESORA</b><span id="status">Preparando la cámara…</span></div>
+  <div id="help">Pon el móvil <b>en horizontal</b> y fíjalo bien: cualquier movimiento se nota en la animación. Deja esta página abierta; MESORA hace las fotos desde el ordenador.</div>
+  <div class="bar" id="bottom">
+    <button id="switch" hidden>Cambiar cámara</button>
+    <button id="dark">Apagar pantalla</button>
+    <button id="retry" hidden>Reintentar</button>
+  </div>
+  <div id="black" hidden>Toca para encender la pantalla</div>
+<script>
+  'use strict';
+  // The phone as MESORA's camera. The video goes to MESORA by WebRTC, straight
+  // over the local network, tuned for a live view without delay; each photo is
+  // taken here at full resolution and sent whole over a data channel.
+  const token = new URLSearchParams(location.search).get('t') || '';
+  const headers = { 'X-Mesora-Token': token };
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const CHUNK = 16 * 1024;
+
+  let stream = null, track = null, pc = null, channel = null, sender = null;
+  let endConnection = () => {}, beat = null;
+  let cameras = [];
+  const want = { deviceId: '', width: 1920, height: 1080 };
+  let wakeLock = null;
+
+  function say(text, kind = '') {
+    $('status').textContent = text;
+    $('status').className = kind;
+  }
+
+  // ---- screen: stays on; can go black so it does not light the set
+  async function keepScreenOn() {
+    try {
+      if (navigator.wakeLock && document.visibilityState === 'visible' && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch { /* not supported: the phone's own setting applies */ }
+  }
+  document.addEventListener('visibilitychange', keepScreenOn);
+  function setDark(on) { $('black').hidden = !on; }
+  $('dark').addEventListener('click', () => setDark(true));
+  $('black').addEventListener('click', () => setDark(false));
+
+  // ---- camera
+  async function openCamera() {
+    if (track && track.readyState === 'live') return;
+    const video = { width: { ideal: want.width }, height: { ideal: want.height }, frameRate: { ideal: 30 } };
+    if (want.deviceId) video.deviceId = { exact: want.deviceId };
+    else video.facingMode = { ideal: 'environment' };
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
+    track = stream.getVideoTracks()[0];
+    // Smooth movement before sharpness while it travels: what is sharp is the photo.
+    try { track.contentHint = 'motion'; } catch { /* older browsers */ }
+    track.addEventListener('ended', () => endConnection()); // another app took the camera
+    const v = $('video');
+    v.srcObject = stream;
+    await v.play().catch(() => {});
+    if (!v.videoWidth) await new Promise((r) => { v.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 3000); });
+    try {
+      cameras = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput')
+        .map((d, i) => ({ id: d.deviceId, label: d.label || `Cámara ${i + 1}` }));
+    } catch { cameras = []; }
+    $('switch').hidden = cameras.length < 2;
+    keepScreenOn();
+  }
+
+  function releaseCamera() {
+    stream?.getTracks().forEach((t) => t.stop());
+    stream = null;
+    track = null;
+    $('video').srcObject = null;
+  }
+
+  /** Opens another camera or size and swaps it in without reconnecting. */
+  async function reopenCamera() {
+    releaseCamera(); // many phones cannot open two cameras at once
+    await openCamera();
+    if (sender) await sender.replaceTrack(track);
+    tellInfo();
+  }
+
+  $('switch').addEventListener('click', async () => {
+    const i = cameras.findIndex((c) => c.id === (want.deviceId || track?.getSettings?.().deviceId));
+    want.deviceId = cameras[(i + 1) % cameras.length]?.id || '';
+    try { await reopenCamera(); } catch (err) { say(`No se pudo cambiar: ${err.message}`, 'err'); }
+  });
+
+  function info() {
+    const v = $('video');
+    let caps = {}, settings = {};
+    try { caps = track?.getCapabilities?.() || {}; } catch { /* not supported */ }
+    try { settings = track?.getSettings?.() || {}; } catch { /* not supported */ }
+    return {
+      type: 'info', label: track?.label || '', width: v.videoWidth || settings.width || 0, height: v.videoHeight || settings.height || 0,
+      caps, settings, cameras, deviceId: settings.deviceId || want.deviceId, want: { width: want.width, height: want.height },
+    };
+  }
+  function send(msg) { if (channel?.readyState === 'open') channel.send(JSON.stringify(msg)); }
+  function tellInfo() { send(info()); }
+  $('video').addEventListener('resize', tellInfo); // the phone was turned
+
+  // ---- photos at full resolution
+  const nextFrame = () => new Promise((r) => {
+    const v = $('video');
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => r());
+    else setTimeout(r, 34);
+  });
+
+  /** The photo, encoded here exactly as MESORA keeps it (format, quality, flip): no second compression. */
+  async function still({ average = 1, quality = 0.95, mime = 'image/jpeg', flipH = false, flipV = false }) {
+    const v = $('video');
+    const w = v.videoWidth, h = v.videoHeight;
+    if (!w || !h) throw new Error('La cámara del móvil no tiene imagen');
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const n = Math.min(16, Math.max(1, Math.floor(average)));
+    const ctx = c.getContext('2d', { willReadFrequently: n > 1 });
+    if (flipH || flipV) {
+      ctx.translate(flipH ? w : 0, flipV ? h : 0);
+      ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
+    }
+    if (n === 1) ctx.drawImage(v, 0, 0, w, h);
+    else {
+      // Several frames averaged: less noise with little light.
+      const sum = new Uint16Array(w * h * 4);
+      for (let k = 0; k < n; k++) {
+        await nextFrame();
+        ctx.drawImage(v, 0, 0, w, h);
+        const d = ctx.getImageData(0, 0, w, h).data;
+        for (let i = 0; i < d.length; i++) sum[i] += d[i];
+      }
+      const out = ctx.createImageData(w, h);
+      const half = n >> 1;
+      for (let i = 0; i < out.data.length; i++) out.data[i] = (sum[i] + half) / n;
+      ctx.putImageData(out, 0, 0); // pixels, not drawing: the flip above does not apply twice
+    }
+    const type = mime === 'image/png' ? 'image/png' : 'image/jpeg';
+    const blob = await new Promise((r) => c.toBlob(r, type, Math.min(1, Math.max(0.5, Number(quality) || 0.95))));
+    if (!blob) throw new Error('El móvil no pudo codificar la foto');
+    return { bytes: await blob.arrayBuffer(), mime: blob.type, width: w, height: h };
+  }
+
+  function drained() {
+    return new Promise((r) => channel.addEventListener('bufferedamountlow', r, { once: true }));
+  }
+
+  async function sendStill(msg) {
+    const { bytes, mime, width, height } = await still(msg);
+    send({ type: 'still', id: msg.id, size: bytes.byteLength, mime, width, height });
+    for (let o = 0; o < bytes.byteLength; o += CHUNK) {
+      if (channel.bufferedAmount > 1024 * 1024) await drained();
+      channel.send(bytes.slice(o, o + CHUNK));
+    }
+    if (navigator.vibrate) navigator.vibrate(20);
+  }
+
+  // ---- what MESORA asks for
+  async function onMessage(msg) {
+    const reply = (extra = {}) => send({ type: 'reply', id: msg.id, ok: true, ...extra });
+    try {
+      if (msg.type === 'still') await sendStill(msg);
+      else if (msg.type === 'apply') { await track.applyConstraints(msg.constraints); tellInfo(); reply(); }
+      else if (msg.type === 'camera') {
+        if (msg.deviceId != null) want.deviceId = String(msg.deviceId);
+        if (msg.width && msg.height) Object.assign(want, { width: msg.width, height: msg.height });
+        await reopenCamera();
+        reply();
+      } else if (msg.type === 'screen') { setDark(!!msg.dark); reply(); }
+      else if (msg.type === 'ping') reply({ t: msg.t });
+    } catch (err) {
+      send({ type: 'reply', id: msg.id, ok: false, error: err.message || String(err) });
+    }
+  }
+
+  // ---- connection
+  /** H.264 first (phones encode it in hardware: faster, cooler), then VP8. */
+  function preferCodecs(transceiver) {
+    try {
+      const caps = RTCRtpSender.getCapabilities?.('video');
+      if (!caps || !transceiver.setCodecPreferences) return;
+      const rank = (c) => (/h264/i.test(c.mimeType) ? 0 : /vp8/i.test(c.mimeType) ? 1 : /rtx|red|fec/i.test(c.mimeType) ? 3 : 2);
+      transceiver.setCodecPreferences([...caps.codecs].sort((a, b) => rank(a) - rank(b)));
+    } catch { /* the browser chooses */ }
+  }
+
+  /**
+   * Starts sending at 3 Mbit/s instead of the usual 0.3: without it the live
+   * view starts at 480×270 and takes seconds to sharpen (measured; see the
+   * test report). Browsers that do not know the hint ignore it.
+   */
+  function startFast(sdp, kbps = 3000) {
+    const hint = `x-google-start-bitrate=${kbps}`;
+    const video = new Set([...sdp.matchAll(/a=rtpmap:(\d+) (?:H264|VP8|VP9|AV1)\//gi)].map((m) => m[1]));
+    const withFmtp = new Set();
+    let out = sdp.replace(/a=fmtp:(\d+) ([^\r\n]*)/g, (line, pt) => {
+      withFmtp.add(pt);
+      return video.has(pt) && !line.includes(hint) ? `${line};${hint}` : line;
+    });
+    for (const pt of video) {
+      if (!withFmtp.has(pt)) out = out.replace(new RegExp(`(a=rtpmap:${pt} [^\\r\\n]*)`), `$1\r\na=fmtp:${pt} ${hint}`);
+    }
+    return out;
+  }
+
+  function gathered(peer, ms) {
+    if (peer.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise((r) => {
+      peer.addEventListener('icegatheringstatechange', () => { if (peer.iceGatheringState === 'complete') r(); });
+      setTimeout(r, ms); // on a local network the first addresses are enough
+    });
+  }
+
+  async function connect() {
+    pc = new RTCPeerConnection({ bundlePolicy: 'max-bundle' });
+    const transceiver = pc.addTransceiver(track, {
+      direction: 'sendonly',
+      streams: [stream],
+      sendEncodings: [{ maxBitrate: 8_000_000, maxFramerate: 30 }],
+    });
+    sender = transceiver.sender;
+    preferCodecs(transceiver);
+    channel = pc.createDataChannel('mesora', { ordered: true });
+    channel.binaryType = 'arraybuffer';
+    channel.bufferedAmountLowThreshold = 256 * 1024;
+    // A beat every second: MESORA notices within seconds if the phone is gone.
+    channel.onopen = () => {
+      tellInfo();
+      say('Conectado: MESORA ve esta cámara', 'ok');
+      $('help').hidden = true;
+      beat = setInterval(() => send({ type: 'beat' }), 1000);
+    };
+    channel.addEventListener('close', () => clearInterval(beat));
+    channel.onmessage = (e) => { if (typeof e.data === 'string') onMessage(JSON.parse(e.data)); };
+    const ended = new Promise((resolve) => {
+      endConnection = resolve;
+      let lost = null;
+      pc.addEventListener('connectionstatechange', () => {
+        const s = pc.connectionState;
+        if (s === 'failed' || s === 'closed') resolve();
+        else if (s === 'disconnected') lost = setTimeout(resolve, 4000); // wifi hiccup: give it a moment
+        else if (s === 'connected') clearTimeout(lost);
+      });
+      channel.addEventListener('close', resolve);
+    });
+    await pc.setLocalDescription(await pc.createOffer());
+    await gathered(pc, 1500);
+    const r = await fetch('/api/camera/offer', {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sdp: pc.localDescription.sdp }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(body.error || r.statusText), { status: r.status });
+    await pc.setRemoteDescription({ type: 'answer', sdp: startFast(body.sdp) });
+    await ended;
+  }
+
+  function hangUp() {
+    clearInterval(beat);
+    endConnection = () => {};
+    try { pc?.close(); } catch { /* already closed */ }
+    pc = null;
+    channel = null;
+    sender = null;
+  }
+
+  async function main() {
+    $('retry').hidden = true;
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) {
+      say('Este navegador no puede usar la cámara aquí. Abre el enlace con Chrome o Safari actualizados.', 'err');
+      return;
+    }
+    let misses = 0;
+    for (;;) {
+      try {
+        const r = await fetch('/api/camera/status', { headers, cache: 'no-store' });
+        if (r.status === 403) { say('El código no es válido. Vuelve a escanear el QR en MESORA.', 'err'); return; }
+        if (!r.ok) throw new Error(r.statusText);
+        await openCamera();
+        say('Conectando con MESORA…');
+        misses = 0;
+        await connect();
+        say('Se perdió la conexión. Reconectando…', 'warn');
+      } catch (err) {
+        if (err.name === 'NotAllowedError' || err.name === 'SecurityError') {
+          say('Permite usar la cámara en este navegador (icono junto a la dirección) y pulsa Reintentar.', 'err');
+          $('retry').hidden = false;
+          return;
+        }
+        if (err.name === 'NotReadableError') say('Otra app está usando la cámara del móvil. Ciérrala.', 'err');
+        else if (err.status === 503) say(err.message || 'MESORA no está esperando al móvil', 'warn');
+        else say('Esperando a MESORA… En el ordenador elige «Móvil por wifi» en Cámara › Fuente.', 'warn');
+        // MESORA is not there: the camera rests until it comes back.
+        if (++misses >= 3) releaseCamera();
+      }
+      hangUp();
+      $('help').hidden = false;
+      await sleep(2000);
+    }
+  }
+  $('retry').addEventListener('click', main);
+  window.addEventListener('pagehide', hangUp); // closing the page tells MESORA at once
+
+  main();
+</script>
+</body>
+</html>

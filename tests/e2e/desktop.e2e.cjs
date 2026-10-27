@@ -2,7 +2,8 @@
 // Run with: npm run build:web && npm run test:e2e   (on Linux without a display: xvfb-run -a npm run test:e2e)
 // Uses Chromium's fake camera and a temporary library and profile; it never touches Documents/MESORA.
 // Optional: MESORA_E2E_SHOTS=<folder> saves screenshots.
-const { _electron: electron } = require('playwright-core');
+const { _electron: electron, chromium } = require('playwright-core');
+const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -50,6 +51,27 @@ async function eventually(cond, timeout = 15000) {
   }
 }
 const readJSON = (...parts) => JSON.parse(fs.readFileSync(path.join(...parts)));
+
+/** Width and height written in a JPEG file. */
+function jpegSize(buf) {
+  for (let i = 2; i + 9 < buf.length;) {
+    if (buf[i] !== 0xff) { i++; continue; }
+    const m = buf[i + 1];
+    if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return { width: buf.readUInt16BE(i + 7), height: buf.readUInt16BE(i + 5) };
+    i += 2 + buf.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
+/** A browser that plays the phone (its own fake camera): Playwright's Chromium, or Chrome where that is what is installed. */
+async function launchPhone() {
+  const args = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'];
+  try { return await chromium.launch({ args }); } catch { return chromium.launch({ channel: 'chrome', args }); }
+}
+
+const httpsStatus = (url) => new Promise((resolve, reject) => {
+  https.get(url, { rejectUnauthorized: false }, (res) => { res.resume(); resolve(res.statusCode); }).on('error', reject);
+});
 const takeOf = (prod) => listTakes().find((t) => t.prod === prod);
 
 // The projects window is refreshed from the disk after it opens.
@@ -708,6 +730,145 @@ const listTakes = () => {
     await Promise.all([win.waitForEvent('load'), win.selectOption('#modalHelp .lang-select', 'es')]);
     await win.waitForFunction(() => window.mesora?.state?.project, null, { timeout: 20000 });
     check(await win.evaluate(() => document.querySelector('#btnCapture').textContent.trim()) === 'Capturar', 'y se vuelve al español');
+  }
+
+  // 21) Móvil como cámara por wifi: otro navegador hace de móvil (con su cámara falsa) y se conecta por WebRTC.
+  {
+    await win.click('#btnProjects');
+    await win.fill('#newProjectName', 'Móvil E2E');
+    await win.click('#formNewProject button[type=submit]');
+    await win.waitForFunction(() => window.mesora.state.project.name === 'Móvil E2E');
+    await win.keyboard.press('Escape');
+    await win.click('.tab[data-tab="camera"]');
+    await win.selectOption('#camRes', '1920x1080');
+    await win.selectOption('#camDevice', 'phone');
+    await win.waitForSelector('#phoneBox:not([hidden]) #phoneUrl:not(:empty)');
+    check((await win.getAttribute('#phoneQr', 'src')).startsWith('data:image/svg+xml;base64,'), 'al elegir «Móvil por wifi» aparece el QR');
+    const camUrl = new URL(await win.textContent('#phoneUrl'));
+    check(camUrl.protocol === 'https:' && camUrl.pathname === '/camera', `el enlace es https (los móviles solo dan la cámara a páginas seguras): ${camUrl.origin}`);
+    camUrl.hostname = '127.0.0.1'; // the "phone" is on this computer
+    check(await httpsStatus(`${camUrl.origin}/api/camera/status`) === 403, 'sin el código del QR no se puede usar');
+    const browser = await launchPhone();
+    try {
+      const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 412, height: 860 } });
+      const phonePage = await ctx.newPage();
+      await phonePage.goto(camUrl.href);
+      await win.waitForFunction(() => window.mesora.camera.remote && window.mesora.camera.active, null, { timeout: 20000 });
+      await phonePage.waitForFunction(() => document.getElementById('status').className === 'ok', null, { timeout: 10000 });
+      log('OK el móvil se conecta: la app lo usa como cámara');
+      const size = await win.evaluate(() => [window.mesora.camera.width, window.mesora.camera.height, window.mesora.state.project.width, window.mesora.state.project.height]);
+      check(size[0] === 1920 && size[1] === 1080 && size[2] === 1920 && size[3] === 1080, `la cámara del móvil abre a la resolución elegida y el proyecto la toma: ${size.join(' × ')}`);
+      let best = 0;
+      for (let i = 0; i < 8 && best < 1920; i++) {
+        await win.waitForTimeout(400);
+        const st = await win.evaluate(() => window.mesora.camera.remote.stats());
+        if (st) best = Math.max(best, st.width);
+      }
+      check(best >= 960, `la imagen en vivo llega nítida desde los primeros segundos (${best} px de ancho)`);
+      const st = await win.evaluate(() => window.mesora.camera.remote.stats());
+      log(`en vivo: ${st.width}×${st.height} · ${st.fps} fps · ${st.codec} · red ${st.networkMs?.toFixed(1)} ms · búfer ${st.bufferMs?.toFixed(1)} ms · decodificar ${st.decodeMs?.toFixed(1)} ms`);
+      check(st.bufferMs != null && st.bufferMs < 100, `la app no acumula imágenes en espera (búfer ${st.bufferMs?.toFixed(1)} ms)`);
+
+      // Photo: full resolution, even when the live view travels smaller.
+      const n0 = await win.evaluate(() => window.mesora.state.project.frames.length);
+      const t0 = Date.now();
+      await win.click('#btnCapture');
+      await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 1 && window.mesora.state.pendingCaptures === 0, n0, { timeout: 20000 });
+      log(`foto del móvil en el timeline en ${Date.now() - t0} ms`);
+      await win.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })));
+      await eventually(() => takeOf('Móvil E2E').files.length === 1);
+      const shot = takeOf('Móvil E2E');
+      const dims = jpegSize(fs.readFileSync(path.join(shot.dir, 'capture', 'X1', shot.files[0])));
+      check(dims?.width === 1920 && dims?.height === 1080, `la foto original tiene la resolución completa del móvil: ${dims?.width} × ${dims?.height}`);
+
+      // PNG: the phone encodes it without loss and that file is the original (no second compression).
+      await win.selectOption('select[data-setting="format"]', 'png');
+      await win.waitForFunction(() => !window.mesora.state.busy);
+      await win.click('#btnCapture');
+      await win.waitForFunction((n) => window.mesora.state.project.frames.length === n + 2 && window.mesora.state.pendingCaptures === 0, n0, { timeout: 20000 });
+      await win.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })));
+      await eventually(() => takeOf('Móvil E2E').files.length === 2);
+      const pngShot = takeOf('Móvil E2E');
+      const pngName = pngShot.files.find((f) => f.endsWith('.png'));
+      const png = pngName && fs.readFileSync(path.join(pngShot.dir, 'capture', 'X1', pngName));
+      check(png && png.readUInt32BE(0) === 0x89504e47 && png.readUInt32BE(16) === 1920 && png.readUInt32BE(20) === 1080, `en PNG la foto del móvil llega sin pérdida y a resolución completa (${pngName})`);
+      await win.selectOption('select[data-setting="format"]', 'jpeg');
+
+      // Another size: the phone reopens its camera without reconnecting.
+      await win.selectOption('#camRes', '1280x720');
+      await win.waitForFunction(() => window.mesora.camera.width === 1280 && window.mesora.camera.height === 720, null, { timeout: 15000 });
+      const still = await win.evaluate(async () => { const c = await window.mesora.camera.grab({ average: 2 }); return [c.width, c.height]; });
+      check(still[0] === 1280 && still[1] === 720, 'al cambiar la resolución el móvil la aplica (y promedia cuadros si se pide)');
+      await win.selectOption('#camRes', '1920x1080');
+
+      await win.check('#phoneDark');
+      await phonePage.waitForSelector('#black:not([hidden])', { timeout: 5000 });
+      log('OK la pantalla del móvil se apaga desde la app (no ilumina la escena)');
+      await win.uncheck('#phoneDark');
+
+      // The phone goes away (closed, no wifi…): the app notices within seconds and waits for it.
+      await ctx.close();
+      await win.waitForFunction(() => !window.mesora.camera.remote && !window.mesora.camera.active, null, { timeout: 12000 });
+      check(await win.textContent('#phoneState') === 'Esperando al móvil…', 'si el móvil se va, la app lo nota y lo espera');
+
+      // Delay from the phone to the screen: the "phone" paints its clock as black and white squares,
+      // the app reads them from each frame it shows. Both clocks are this computer's.
+      const lagCtx = await browser.newContext({ ignoreHTTPSErrors: true });
+      await lagCtx.addInitScript(() => {
+        navigator.mediaDevices.getUserMedia = async () => {
+          const c = Object.assign(document.createElement('canvas'), { width: 1280, height: 720 });
+          const g = c.getContext('2d');
+          const paint = () => {
+            const t = Date.now() & 0xffffff;
+            g.fillStyle = '#808080';
+            g.fillRect(0, 0, 1280, 720);
+            for (let i = 0; i < 24; i++) {
+              g.fillStyle = (t >> i) & 1 ? '#fff' : '#000';
+              g.fillRect(40 + (i % 12) * 100, 200 + Math.floor(i / 12) * 160, 80, 80);
+            }
+            requestAnimationFrame(paint);
+          };
+          paint();
+          return c.captureStream(30);
+        };
+      });
+      const lagPage = await lagCtx.newPage();
+      await lagPage.goto(camUrl.href);
+      await win.waitForFunction(() => window.mesora.camera.remote && window.mesora.camera.active, null, { timeout: 20000 });
+      await win.waitForTimeout(1500);
+      const lag = await win.evaluate(() => new Promise((resolve) => {
+        const v = window.mesora.camera.video;
+        const c = Object.assign(document.createElement('canvas'), { width: 1280, height: 720 });
+        const g = c.getContext('2d', { willReadFrequently: true });
+        const out = [];
+        const step = () => {
+          const now = Date.now();
+          g.drawImage(v, 0, 0, 1280, 720);
+          const d = g.getImageData(0, 0, 1280, 720).data;
+          let t = 0;
+          for (let i = 0; i < 24; i++) {
+            const x = 80 + (i % 12) * 100, y = 240 + Math.floor(i / 12) * 160;
+            if (d[(y * 1280 + x) * 4] > 128) t |= 1 << i;
+          }
+          const ms = ((now & 0xffffff) - t + 0x1000000) % 0x1000000;
+          if (ms < 5000) out.push(ms);
+          if (out.length >= 90) {
+            out.sort((a, b) => a - b);
+            resolve({ n: out.length, min: out[0], median: out[out.length >> 1], p95: out[Math.floor(out.length * 0.95)] });
+          } else v.requestVideoFrameCallback(step);
+        };
+        v.requestVideoFrameCallback(step);
+      }));
+      log(`retardo móvil → pantalla de la app (sin la wifi ni el sensor del móvil): mediana ${lag.median} ms, p95 ${lag.p95} ms, mínimo ${lag.min} ms (${lag.n} cuadros)`);
+      check(lag.median < 300, `la imagen en vivo llega sin retraso apreciable (mediana ${lag.median} ms)`);
+      await lagCtx.close();
+    } finally {
+      await browser.close();
+    }
+    // Another camera: the phone page stops being served.
+    await win.selectOption('#camDevice', { index: 0 });
+    await win.waitForFunction(() => window.mesora.camera.active && !window.mesora.camera.remote, null, { timeout: 15000 });
+    check(await httpsStatus(`${camUrl.origin}/api/camera/status`).then(() => false, () => true), 'al elegir otra cámara, la página del móvil deja de estar disponible');
   }
 
   check(errors.length === 0, `sin errores en la consola${errors.length ? `: ${errors.join(' | ')}` : ''}`);

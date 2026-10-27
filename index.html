@@ -134,6 +134,22 @@
             <button id="btnCamToggle" class="btn grow">Conectar</button>
           </div>
           <p class="muted small" id="camInfo">Sin señal</p>
+          <div id="phoneBox" class="phone-box desktop-app-only" hidden>
+            <div id="phoneWait">
+              <img id="phoneQr" class="remote-qr" alt="Código QR para usar el móvil como cámara">
+              <ol class="small phone-steps">
+                <li>Conecta el móvil a la misma wifi que este ordenador.</li>
+                <li>Escanea este código con la cámara del móvil.</li>
+                <li>La primera vez el navegador avisa de que la conexión no es privada: pulsa «Configuración avanzada» (o «Mostrar detalles») y «Continuar». El certificado lo ha creado este ordenador. Después permite usar la cámara.</li>
+              </ol>
+              <p class="small">O abre en el navegador del móvil:<br><code id="phoneUrl" class="selectable"></code></p>
+              <details id="phoneOther" class="small" hidden><summary>¿No abre? Otras direcciones de este ordenador</summary><pre id="phoneOtherUrls" class="selectable"></pre></details>
+            </div>
+            <p class="small" id="phoneState"></p>
+            <label class="field" id="phoneCamField" hidden><span>Cámara del móvil</span><select id="phoneCam"></select></label>
+            <label class="check" id="phoneDarkField" hidden><input type="checkbox" id="phoneDark"> Apagar la pantalla del móvil (para que no ilumine la escena)</label>
+            <p class="muted small" id="phoneStats"></p>
+          </div>
           <div class="row wrap">
             <label class="check"><input type="checkbox" data-setting="flipH"> Espejo horizontal</label>
             <label class="check"><input type="checkbox" data-setting="flipV"> Voltear vertical</label>

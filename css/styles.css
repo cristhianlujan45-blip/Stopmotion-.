@@ -616,6 +616,10 @@ details.menu > summary::-webkit-details-marker { display: none; }
 .hud-mouth b { padding-left: 4px; }
 .remote-qr { display: block; width: 200px; height: 200px; margin: 8px auto; background: #fff; border-radius: 8px; }
 code.selectable { user-select: all; word-break: break-all; font-size: 11.5px; }
+.phone-box { margin-top: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.phone-steps { margin: 0 0 6px; padding-left: 18px; color: #c5c9d2; line-height: 1.45; }
+.phone-steps li + li { margin-top: 4px; }
+#phoneOtherUrls { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; user-select: all; font-size: 11.5px; }
 .error-text { color: #ff8a80; }
 
 /* Learning mode */

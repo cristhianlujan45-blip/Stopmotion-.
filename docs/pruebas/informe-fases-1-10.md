@@ -21,15 +21,16 @@ la norma del proyecto, nada de esto se ha movido ni disparado.
 
 | Batería | Comando | Resultado |
 |---|---|---|
-| Unitarias | `npm test` | **70 pasan**, 0 fallan, 1 omitida (RAW reales: solo se ejecuta con muestras en `MESORA_RAW_SAMPLES`; se ejecutó a mano con RAW de Canon EOS R, Nikon Z6 y Sony A7 III en la fase 4) |
+| Unitarias | `npm test` | **73 pasan**, 0 fallan, 1 omitida (RAW reales: solo se ejecuta con muestras en `MESORA_RAW_SAMPLES`; se ejecutó a mano con RAW de Canon EOS R, Nikon Z6 y Sony A7 III en la fase 4) |
 | Píxel del visor (GPU y 2D) | `npm run test:viewer` | **47 comprobaciones**, todas pasan |
-| De principio a fin, app de escritorio | `npm run test:e2e` | **101 comprobaciones**, todas pasan, sin errores en la consola |
+| De principio a fin, app de escritorio | `npm run test:e2e` | **115 comprobaciones**, todas pasan, sin errores en la consola |
 | Regresión web (navegador) | scripts de comprobación con Chromium | Captura, deshacer desde el aviso, proyectos, pistas de audio, WAV exacto y persistencia tras recargar: pasan, sin errores |
 
 Pruebas unitarias por archivo: asistente 7, copia de seguridad 1, carpeta vigilada
-y RAW 5, FFmpeg 4, firmware 1, color y deflicker 6, biblioteca en disco 13,
-lip sync / WAV / archivos / aprendizaje 5, mando y API 1, luces y movimiento 6,
-atajos 3, tiempos 4, actualizaciones 3, X-Sheet 3, ZIP 3.
+y RAW 5, certificado del móvil 2, FFmpeg 4, firmware 1, color y deflicker 6,
+biblioteca en disco 13, lip sync / WAV / archivos / aprendizaje 5, mando, API y
+cámara del móvil 2, luces y movimiento 6, atajos 3, tiempos 4, actualizaciones 3,
+X-Sheet 3, ZIP 3.
 
 ## Qué comprueba la prueba de principio a fin
 
@@ -51,6 +52,47 @@ Sobre la app de escritorio real, con una biblioteca y un perfil temporales:
 14. **Modo aprendizaje**: salta lo ya hecho, señala el botón, avanza al reproducir y al exportar, se cierra.
 15. **Luz y movimiento** con simuladores: el look correcto sale por **Art-Net** antes de la foto (recibido en un socket de este mismo ordenador); «Ir a» del eje; «Moviendo…» antes de la foto; la foto se hace con el eje en la posición calculada por la curva.
 16. **Inglés**: interfaz, visor y nombres de escena/toma en inglés y vuelta al español.
+17. **Móvil como cámara por wifi**: otro navegador (Chromium o Chrome, con su
+    cámara falsa) hace de móvil; ver la sección siguiente.
+
+## Móvil como cámara por wifi
+
+Montaje: la app de escritorio real y, en el mismo ordenador, un navegador que
+abre la página del QR como lo haría el móvil (acepta el certificado propio igual
+que el usuario al pulsar «Continuar»). La imagen va por WebRTC entre los dos
+procesos. Comprobado:
+
+- La página solo se sirve por `https` y con el código del QR (`403` sin él); al
+  elegir otra cámara deja de estar disponible.
+- El móvil se conecta, la app lo usa como cámara y el proyecto toma su tamaño
+  (1920 × 1080, el elegido en *Resolución*).
+- Las fotos llegan a la **resolución completa** del móvil aunque la imagen en
+  vivo viaje más pequeña: el original en disco mide 1920 × 1080 en JPEG; en PNG
+  llega **sin pérdida** y se guarda tal cual (el móvil codifica en el formato,
+  calidad y volteo elegidos; no hay segunda compresión).
+- Cambiar la resolución a 1280 × 720 la aplica en el móvil sin reconectar;
+  el promediado de cuadros funciona.
+- «Apagar la pantalla del móvil» la pone en negro.
+- Si el móvil desaparece (se cierra sin despedirse), la app lo nota en unos
+  segundos (latido cada segundo, corte a los 5 s sin noticias) y lo espera; el
+  móvil reconecta solo.
+
+**Medidas** (contenedor Linux con GPU por software; los dos extremos en el
+mismo ordenador, así que **no incluyen la wifi ni el sensor de un móvil real**):
+
+| Medida | Resultado |
+|---|---|
+| Retardo de la imagen en vivo, del «móvil» a la pantalla de la app | **mediana 39–40 ms**, p95 57–63 ms, mínimo 16–18 ms (90 cuadros por ejecución, tres ejecuciones). Método: el «móvil» pinta su reloj como cuadrados blancos y negros y la app lo lee en cada cuadro que muestra |
+| Espera en el búfer de la app (jitter buffer) | 5–7 ms |
+| Decodificación (H.264) | 3–8 ms |
+| Resolución en vivo al empezar | **1920 × 1080 desde el primer medio segundo**. Sin el arranque rápido (3 Mbit/s) era 480 × 270 los primeros 3 s y 960 × 540 a los 8 s |
+| Foto a resolución completa pedida al móvil (1080p, hacerla, codificarla y recibirla) | 50–110 ms tras el arranque (la primera, hasta 0,8 s) |
+
+Del clic a ver el fotograma en el timeline pasaron 2–5 s **también con la
+webcam normal** en este contenedor: guardar el original y las vistas previas
+comprime varias imágenes y aquí cada compresión JPEG de 1080p tarda ~0,8 s
+(GPU por software). En el camino del móvil se ahorra una de esas compresiones.
+No se ha medido en un ordenador normal.
 
 ## Comprobaciones manuales registradas
 
@@ -91,4 +133,8 @@ Sobre la app de escritorio real, con una biblioteca y un perfil temporales:
 - **Luces DMX y nodos Art-Net reales, ENTTEC DMX USB Pro**: solo formato de paquetes y envío a este mismo ordenador.
 - **Firmware MESORA-Moco en una placa**: compilado con el compilador del sistema y ejecutado con un Arduino simulado; no con el compilador de Arduino ni con motores.
 - **Móvil real** como mando (sí la página a tamaño de móvil en un navegador).
+- **Móvil real como cámara por wifi**: ni Android ni iPhone; ni el aviso del
+  certificado en sus navegadores, ni los controles de cámara que expongan, ni el
+  retardo añadido por la wifi y por su cámara. La conexión WebRTC, las fotos y el
+  retardo de la cadena se midieron con otro navegador en el mismo ordenador.
 - Rendimiento con tomas muy largas (más de 5.000 fotogramas) y con GPU real.

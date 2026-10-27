@@ -79,3 +79,25 @@ print(urllib.request.urlopen(req).read())
 Código: `electron/core/remote.cjs` (servidor), `electron/remote/page.html`
 (página del móvil). Pruebas: `tests/remote.test.js` y la sección 15 de
 `tests/e2e/desktop.e2e.cjs`.
+
+## Cámara del móvil (servidor aparte)
+
+El móvil como cámara (*Cámara › Fuente › Móvil por wifi*) usa **otro servidor**,
+`https` en el puerto **8766**, porque los móviles solo dan la cámara a páginas
+seguras. No es parte de la API para otros programas; se documenta para saber qué
+queda abierto en la red:
+
+- Solo escucha mientras *Móvil por wifi* está elegido.
+- Su código de acceso es **distinto** del mando y se **guarda** entre sesiones
+  (junto con el certificado, en `phone-camera.json` de la carpeta de datos de la
+  app, solo legible por el usuario), para que el móvil reconecte solo.
+- El certificado es propio (ECDSA P-256, 397 días), por eso el móvil avisa la
+  primera vez. `electron/core/cert.cjs` lo genera sin dependencias.
+- Rutas, todas con el código: `GET /camera` (página del móvil),
+  `GET /api/camera/status` y `POST /api/camera/offer` (oferta WebRTC → respuesta).
+  El vídeo y las fotos no pasan por este servidor: van del móvil a la app por
+  WebRTC (imagen en vivo y canal de datos para las fotos).
+
+Código: `electron/remote/camera.html` (página del móvil), `js/phonecam.js`
+(recepción en la app). Pruebas: `tests/cert.test.js`, `tests/remote.test.js` y la
+sección 21 de `tests/e2e/desktop.e2e.cjs`.
