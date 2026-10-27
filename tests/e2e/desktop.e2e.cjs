@@ -37,6 +37,21 @@ async function launch() {
   return { app, win, errors };
 }
 
+/**
+ * Waits until `cond()` holds (usually something on disk written by the app), for slow
+ * machines; the checks that follow stay the same. Returns false after the timeout.
+ */
+async function eventually(cond, timeout = 15000) {
+  const end = Date.now() + timeout;
+  for (;;) {
+    try { if (await cond()) return true; } catch { /* not written yet */ }
+    if (Date.now() > end) return false;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+const readJSON = (...parts) => JSON.parse(fs.readFileSync(path.join(...parts)));
+const takeOf = (prod) => listTakes().find((t) => t.prod === prod);
+
 // The projects window is refreshed from the disk after it opens.
 const projectsReady = (win) => win.waitForSelector('#modalProjects:not([hidden]) #projectList[aria-busy="false"]');
 
@@ -83,7 +98,7 @@ const listTakes = () => {
   });
   await app.close();
   ({ app, win, errors } = await launch());
-  await win.waitForTimeout(1500);
+  await eventually(() => readJSON(libDir, 'Proyecto antiguo', 'production.json').migratedFrom === 'old1');
   const migrated = listTakes().find((t) => t.prod === 'Proyecto antiguo');
   check(migrated, 'el proyecto antiguo aparece como carpeta de producción');
   check(migrated.files.length === 2, 'migración: 2 capturas originales (f1 se reutiliza dos veces en el timeline)');
@@ -121,8 +136,8 @@ const listTakes = () => {
   }
   await win.waitForFunction(() => window.mesora.state.project.frames.length === 3 && window.mesora.state.pendingCaptures === 0, null, { timeout: 15000 });
   await win.evaluate(() => window.mesora.state.project && document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })));
-  await win.waitForTimeout(800);
-  let take = listTakes().find((t) => t.prod === 'Corto E2E');
+  await eventually(() => takeOf('Corto E2E').edl.frames.length === 3);
+  let take = takeOf('Corto E2E');
   check(take && take.files.length === 3 && take.edl.frames.length === 3, 'captura: 3 originales en capture/X1 y 3 fotogramas en edl.json');
   check(take.files.every((f) => /^sc010_tk01_X1_c00000[1-3]\.jpg$/.test(f)), `nombres de archivo: ${take.files.join(', ')}`);
   check(await win.evaluate(() => document.querySelector('#takeLabel').textContent) === 'Escena 010 · Toma 1', 'la cabecera muestra escena y toma');
@@ -140,11 +155,11 @@ const listTakes = () => {
   const undoBtn = win.locator('.toast .toast-actions button', { hasText: 'Deshacer' });
   check(await win.locator('.toast .toast-actions button', { hasText: 'Ver papelera' }).count() === 1, 'el aviso de borrado ofrece «Deshacer» y «Ver papelera»');
   await undoBtn.click();
-  await win.waitForTimeout(900);
+  await eventually(() => takeOf('Corto E2E').edl.frames.length === 3);
   check(listTakes().find((t) => t.prod === 'Corto E2E').edl.frames.length === 3, '«Deshacer» del aviso devuelve el fotograma');
   const deletedId = await selectSecond();
   await win.keyboard.press('Delete');
-  await win.waitForTimeout(900);
+  await eventually(() => takeOf('Corto E2E').edl.frames.length === 2);
   take = listTakes().find((t) => t.prod === 'Corto E2E');
   check(take.edl.frames.length === 2 && take.files.length === 3, 'borrar: 2 fotogramas en el timeline, 3 originales en el disco');
 
@@ -157,7 +172,7 @@ const listTakes = () => {
   if (shots) await win.screenshot({ path: path.join(shots, 'mesora-escritorio-papelera.png') });
   await win.click('#modalListItems [data-act="restore"]');
   await win.keyboard.press('Escape');
-  await win.waitForTimeout(900);
+  await eventually(() => takeOf('Corto E2E').edl.frames.length === 3);
   take = listTakes().find((t) => t.prod === 'Corto E2E');
   check(take.edl.frames.length === 3, 'restaurar: vuelve a haber 3 fotogramas');
 
@@ -170,8 +185,11 @@ const listTakes = () => {
 
   // 7) Conform.
   await win.click('#btnConform');
-  await win.waitForTimeout(1500);
   const exportsDir = path.join(libDir, 'Corto E2E', 'exports');
+  await eventually(() => {
+    const dir = fs.readdirSync(exportsDir).find((n) => n.startsWith('conform_sc010_tk01_'));
+    return dir && fs.readdirSync(path.join(exportsDir, dir)).filter((n) => !n.endsWith('.partial')).length === 3;
+  });
   const conformDir = fs.readdirSync(exportsDir).find((n) => n.startsWith('conform_sc010_tk01_'));
   check(conformDir && fs.readdirSync(path.join(exportsDir, conformDir)).length === 3, 'conform: 3 imágenes numeradas en exports/');
 
@@ -255,8 +273,8 @@ const listTakes = () => {
   await win.fill('.xs-row[data-exposure="2"] input[data-key="phoneme"]', 'O');
   await win.click('#viewerArea');
   await win.keyboard.press('Control+s');
-  await win.waitForTimeout(800);
   const sceneJson = () => JSON.parse(fs.readFileSync(path.join(libDir, 'Corto E2E', 'scenes', 'sc010', 'scene.json')));
+  await eventually(() => sceneJson().settings.xsheet.plan['2'].dialog === 'Hola');
   check(sceneJson().settings.xsheet.plan['2'].dialog === 'Hola', 'el plan del X-Sheet se guarda en la escena');
   // Duplicating frame 1 shifts the pictures, not the dialogue: it stays at exposure 2.
   await win.evaluate(() => { const st = window.mesora.state; st.selection = new Set([st.project.frames[0].key]); st.playhead = 0; });
@@ -333,7 +351,8 @@ const listTakes = () => {
   check(await delBtn.textContent() === 'Eliminar proyecto', 'con una sola toma, el menú dice «Eliminar proyecto»');
   win.once('dialog', (d) => d.accept());
   await delBtn.click();
-  await win.waitForTimeout(1500);
+  // Moving a folder to the system trash can take a while (Windows): wait for the app's notice.
+  await win.waitForFunction(() => [...document.querySelectorAll('.toast')].some((t) => t.classList.contains('error') || t.textContent.includes('se movió a la papelera del sistema')), null, { timeout: 30000 });
   const trashErr = await win.$$eval('.toast.error', (els) => els.map((e) => e.textContent));
   if (trashErr.length) log(`AVISO: la papelera del sistema no está disponible en este entorno: ${trashErr.join(' | ')}`);
   else check(!fs.existsSync(path.join(libDir, 'Proyecto antiguo')), '«Eliminar proyecto» manda la carpeta a la papelera del sistema');
@@ -417,7 +436,7 @@ const listTakes = () => {
   const trackState = await win.evaluate(() => window.mesora.state.project.tracks.map((t) => ({ offset: t.offset, muted: t.muted })));
   check(trackState[0].muted && !trackState[1].muted && trackState[1].offset === 4, 'la voz silenciada y la música empieza en la exposición 4');
   await win.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true })));
-  await win.waitForTimeout(800);
+  await eventually(() => readJSON(takeOf('Asistente E2E').dir, '..', '..', 'scene.json').tracks?.[1]?.offset === 4);
   const asistTake = listTakes().find((t) => t.prod === 'Asistente E2E');
   const asistScene = JSON.parse(fs.readFileSync(path.join(asistTake.dir, '..', '..', 'scene.json')));
   check(asistScene.tracks?.length === 2 && asistScene.tracks[1].offset === 4, 'las pistas se guardan en scene.json');
